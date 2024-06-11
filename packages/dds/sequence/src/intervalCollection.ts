@@ -137,14 +137,14 @@ function decompressInterval(
 	interval: CompressedSerializedInterval,
 	label?: string,
 ): ISerializedInterval {
-	const stickiness = interval[5] ?? IntervalStickiness.END;
-	const { startSide, endSide } = sidesFromStickiness(stickiness);
+	const [start, end, sequenceNumber, intervalType, properties, stickiness] = interval;
+	const { startSide, endSide } = sidesFromStickiness(stickiness ?? IntervalStickiness.END);
 	return {
-		start: interval[0],
-		end: interval[1],
-		sequenceNumber: interval[2],
-		intervalType: interval[3],
-		properties: { ...interval[4], [reservedRangeLabelsKey]: [label] },
+		start,
+		end,
+		sequenceNumber,
+		intervalType,
+		properties: { ...properties, [reservedRangeLabelsKey]: [label] },
 		stickiness,
 		startSide,
 		endSide,

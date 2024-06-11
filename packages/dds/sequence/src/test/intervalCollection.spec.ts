@@ -2124,6 +2124,7 @@ describe("the start and end positions of intervals are updated in response to ed
 		removeRange: [number, number];
 		expected: [SequencePlace, SequencePlace];
 		skip?: string[];
+		only?: string[];
 	}[] = [
 		// remove the entire interval
 		// end should slide to beginning, resulting in an empty range
@@ -2132,7 +2133,7 @@ describe("the start and end positions of intervals are updated in response to ed
 			removeRange: [0, 1],
 			expected: ["start", 0],
 			// TODO: #8111: enable after interval side is correctly loaded from summary for endpoints at start or end.
-			skip: ["slide interval loaded from summary"],
+			// skip: ["slide interval loaded from summary"],
 		},
 		{
 			interval: [2, 5],
@@ -2156,8 +2157,9 @@ describe("the start and end positions of intervals are updated in response to ed
 			expected: ["end", "end"],
 			skip: [
 				// TODO: #8111: enable after interval side is correctly loaded from summary for endpoints at start or end.
-				"slide interval loaded from summary",
+				// "slide interval loaded from summary",
 			],
+			// only: ["slide interval loaded from summary"],
 		},
 		// remove more than the entire interval
 		// end should slide to beginning, which slides back to beginning of removal
@@ -2166,7 +2168,7 @@ describe("the start and end positions of intervals are updated in response to ed
 			removeRange: [0, 2],
 			expected: ["start", 0],
 			// TODO: #8111: enable after interval side is correctly loaded from summary for endpoints at start or end.
-			skip: ["slide interval loaded from summary"],
+			// skip: ["slide interval loaded from summary"],
 		},
 		{
 			interval: [1, 4],
@@ -2184,7 +2186,7 @@ describe("the start and end positions of intervals are updated in response to ed
 			expected: ["end", "end"],
 			skip: [
 				// TODO: #8111: enable after interval side is correctly loaded from summary for endpoints at start or end.
-				"slide interval loaded from summary",
+				// "slide interval loaded from summary",
 			],
 		},
 		// removing a subsequently adjacent character should not affect the interval
@@ -2193,7 +2195,7 @@ describe("the start and end positions of intervals are updated in response to ed
 			removeRange: [1, 2],
 			expected: ["start", 1],
 			// TODO: #8111: enable after interval side is correctly loaded from summary for endpoints at start or end.
-			skip: ["slide interval loaded from summary"],
+			// skip: ["slide interval loaded from summary"],
 		},
 		{
 			interval: [1, 4],
@@ -2211,7 +2213,7 @@ describe("the start and end positions of intervals are updated in response to ed
 			removeRange: [7, 8],
 			expected: [7, "end"],
 			// TODO: #8111: enable after interval side is correctly loaded from summary for endpoints at start or end.
-			skip: ["slide interval loaded from summary"],
+			// skip: ["slide interval loaded from summary"],
 		},
 		// removing the start slides the start position forward
 		{
@@ -2228,18 +2230,20 @@ describe("the start and end positions of intervals are updated in response to ed
 	];
 	function itSelectivelySkipped(
 		skip: string[] | undefined,
+		only: string[] | undefined,
 		name: string,
 		test: () => void | Promise<void>,
 	): void {
-		(skip?.includes(name) ? it.skip : it)(name, test);
+		const itFn = skip?.includes(name) ? it.skip : only?.includes(name) ? it.only : it;
+		itFn(name, test);
 	}
-	for (const { interval, removeRange, expected, skip } of removeRanges) {
+	for (const { interval, removeRange, expected, skip, only } of removeRanges) {
 		const [start, end] = interval;
 		describe(`slides ${JSON.stringify(interval)} correctly when ${JSON.stringify(
 			removeRange,
 		)} is removed`, () => {
 			const initialText = "0123456789";
-			itSelectivelySkipped(skip, "one client", () => {
+			itSelectivelySkipped(skip, only, "one client", () => {
 				// setup
 				clients[0].sharedString.insertText(0, initialText);
 				containerRuntimeFactory.processAllMessages();
@@ -2264,7 +2268,7 @@ describe("the start and end positions of intervals are updated in response to ed
 				// Verify that the interval was updated correctly in response to removal.
 				assertInterval(clients[0].sharedString, intervalId, expected);
 			});
-			itSelectivelySkipped(skip, "rebase interval over removal", async () => {
+			itSelectivelySkipped(skip, only, "rebase interval over removal", async () => {
 				// setup
 				clients[0].containerRuntime.connected = true;
 				clients[1].containerRuntime.connected = true;
@@ -2288,30 +2292,35 @@ describe("the start and end positions of intervals are updated in response to ed
 				assertInterval(clients[0].sharedString, intervalId, expected);
 			});
 
-			itSelectivelySkipped(skip, "rebase remote removal over interval creation", async () => {
-				// setup
-				clients[0].containerRuntime.connected = true;
-				clients[1].containerRuntime.connected = true;
+			itSelectivelySkipped(
+				skip,
+				only,
+				"rebase remote removal over interval creation",
+				async () => {
+					// setup
+					clients[0].containerRuntime.connected = true;
+					clients[1].containerRuntime.connected = true;
 
-				clients[0].sharedString.insertText(0, initialText);
-				containerRuntimeFactory.processAllMessages();
-				clients[1].containerRuntime.connected = false;
-				const collection = clients[0].sharedString.getIntervalCollection("test");
-				const initial = collection.add({ start, end, props: { intervalId: "0" } });
-				const intervalId = initial.getIntervalId();
+					clients[0].sharedString.insertText(0, initialText);
+					containerRuntimeFactory.processAllMessages();
+					clients[1].containerRuntime.connected = false;
+					const collection = clients[0].sharedString.getIntervalCollection("test");
+					const initial = collection.add({ start, end, props: { intervalId: "0" } });
+					const intervalId = initial.getIntervalId();
 
-				// remove the specified range
-				clients[1].sharedString.removeText(...removeRange);
-				containerRuntimeFactory.processAllMessages();
-				clients[1].containerRuntime.connected = true;
-				containerRuntimeFactory.processAllMessages();
-				await assertConsistent(clients);
+					// remove the specified range
+					clients[1].sharedString.removeText(...removeRange);
+					containerRuntimeFactory.processAllMessages();
+					clients[1].containerRuntime.connected = true;
+					containerRuntimeFactory.processAllMessages();
+					await assertConsistent(clients);
 
-				// Verify that the interval was updated correctly in response to removal.
-				assertInterval(clients[0].sharedString, intervalId, expected);
-			});
+					// Verify that the interval was updated correctly in response to removal.
+					assertInterval(clients[0].sharedString, intervalId, expected);
+				},
+			);
 
-			itSelectivelySkipped(skip, "slide interval loaded from summary", async () => {
+			itSelectivelySkipped(skip, only, "slide interval loaded from summary", async () => {
 				clients[0].sharedString.insertText(0, initialText);
 				containerRuntimeFactory.processAllMessages();
 
@@ -2325,6 +2334,11 @@ describe("the start and end positions of intervals are updated in response to ed
 						containerRuntimeFactory,
 						clients[0],
 						"fromSummary",
+						{
+							intervalStickinessEnabled: true,
+							mergeTreeEnableObliterate: true,
+							mergeTreeReferencesCanSlideToEndpoint: true,
+						},
 						stringFactory,
 					),
 				);
@@ -2335,6 +2349,7 @@ describe("the start and end positions of intervals are updated in response to ed
 						.getIntervalById(intervalId),
 					undefined,
 				);
+				assertInterval(clients[clients.length - 1].sharedString, intervalId, interval);
 
 				clients[1].sharedString.removeText(...removeRange);
 				containerRuntimeFactory.processAllMessages();
