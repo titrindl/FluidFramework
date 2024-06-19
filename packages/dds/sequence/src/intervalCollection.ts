@@ -1265,10 +1265,14 @@ export class IntervalCollection<TInterval extends ISerializableInterval>
 				// Any sliding caused by concurrent removes is resolved when this add op is acked.
 				// This means any slides performed by this client before acking the add op should be considered local,
 				// and rebased over concurrent inserts.
-				interval.start.localCreate = localSeq;
-				interval.start.localCreateRefSeq = this.client?.getCollabWindow().currentSeq;
-				interval.end.localCreate = localSeq;
-				interval.start.localCreateRefSeq = this.client?.getCollabWindow().currentSeq;
+				if (localSeq !== undefined && this.client !== undefined) {
+					const localCreateInfo = {
+						localSeq,
+						localCreateRefSeq: this.client?.getCollabWindow().currentSeq,
+					};
+					interval.start.saveLocalCreate(localCreateInfo);
+					interval.end.saveLocalCreate(localCreateInfo);
+				}
 			}
 			const serializedInterval: ISerializedInterval = {
 				start: startPos,
@@ -1380,16 +1384,15 @@ export class IntervalCollection<TInterval extends ISerializableInterval>
 				if (newInterval instanceof SequenceInterval) {
 					setSlideOnRemove(newInterval.start);
 					setSlideOnRemove(newInterval.end);
-					if (localSeq) {
+					if (localSeq && this.client) {
 						// other clients don't know about the new start and end of this interval until this change op is sequenced.
 						// Slides caused by concurrent removes are resolved at the point the change op is sequenced.
 						// We need to record the local sequence number and refSeq at which the interval was changed so that we can
 						// re-slide when we receive concurrent remove/insert ops.
-						const refSeq = this.client?.getCollabWindow().currentSeq;
-						newInterval.start.localCreate = localSeq;
-						newInterval.start.localCreateRefSeq = refSeq;
-						newInterval.end.localCreate = localSeq;
-						newInterval.end.localCreateRefSeq = refSeq;
+						const refSeq = this.client.getCollabWindow().currentSeq;
+						const localCreateInfo = { localSeq, localCreateRefSeq: refSeq };
+						newInterval.start.saveLocalCreate(localCreateInfo);
+						newInterval.end.saveLocalCreate(localCreateInfo);
 					}
 				}
 			}
@@ -1696,27 +1699,8 @@ export class IntervalCollection<TInterval extends ISerializableInterval>
 			return;
 		}
 
-		if (
-			interval.start.localCreate !== undefined &&
-			interval.start.localSlide === interval.start.localCreate
-		) {
-			interval.start.localSlide = undefined;
-			interval.start.segmentBeforeLocalSlide = undefined;
-			interval.start.offsetBeforeLocalSlide = undefined;
-		}
-		interval.start.localCreate = undefined;
-		interval.start.localCreateRefSeq = undefined;
-
-		if (
-			interval.end.localCreate !== undefined &&
-			interval.end.localSlide === interval.end.localCreate
-		) {
-			interval.end.localSlide = undefined;
-			interval.end.segmentBeforeLocalSlide = undefined;
-			interval.end.offsetBeforeLocalSlide = undefined;
-		}
-		interval.end.localCreate = undefined;
-		interval.end.localCreateRefSeq = undefined;
+		interval.start.clearLocalCreate();
+		interval.end.clearLocalCreate();
 
 		if (
 			!refTypeIncludesFlag(interval.start, ReferenceType.StayOnRemove) &&

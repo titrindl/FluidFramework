@@ -12,7 +12,11 @@ import { TrackingGroup, TrackingGroupCollection } from "./mergeTreeTracking.js";
 import { ReferenceType } from "./ops.js";
 // eslint-disable-next-line import/no-deprecated
 import { PropertySet, addProperties } from "./properties.js";
-import { ReferencePosition, refTypeIncludesFlag } from "./referencePositions.js";
+import {
+	ReferencePosition,
+	compareReferencePositions,
+	refTypeIncludesFlag,
+} from "./referencePositions.js";
 
 /**
  * Dictates the preferential direction for a {@link ReferencePosition} to slide
@@ -54,6 +58,26 @@ function _validateReferenceType(refType: ReferenceType) {
 		);
 	}
 }
+
+/**
+ * Information saved until a local slide is acked.
+ * Used to re-slide on concurrent inserts.
+ */
+export interface LocalSlideInfo {
+	localSeq: number;
+	refBeforeSlide: LocalReferencePosition;
+}
+
+/**
+ * Information saved until the creation of an operation which creates a shared LocalReference
+ * (such as IntervalOpType.ADD and IntervalOpType.CHANGE from packages/dds/sequence).
+ * All slides for this reference are considered local until the creation is acked.
+ */
+export interface LocalCreateInfo {
+	localSeq: number;
+	localCreateRefSeq: number;
+}
+
 /**
  * @sealed
  * @alpha
@@ -63,16 +87,43 @@ export interface LocalReferencePosition extends ReferencePosition {
 		Record<"beforeSlide" | "afterSlide", (ref: LocalReferencePosition) => void>
 	>;
 
-	localCreate?: number;
-	localCreateRefSeq?: number;
+	saveLocalCreate(info: LocalCreateInfo): void;
+	getLocalCreate(): LocalCreateInfo | undefined;
+	clearLocalCreate(): void;
 
-	localSlide?: number;
-	segmentBeforeLocalSlide?: ISegment;
-	offsetBeforeLocalSlide?: number;
+	/**
+	 * Save information about a local slide optimistically applied to this reference.
+	 * See {@link LocalSlideInfo}.
+	 *
+	 * @param info - Information saved until a local slide is acked.
+	 */
+	saveLocalSlide(info: LocalSlideInfo): void;
+	/**
+	 * Get information saved about an optimistically applied local slide.
+	 * See {@link LocalSlideInfo}.
+	 */
+	getLocalSlide(): LocalSlideInfo | undefined;
+	/**
+	 * This reference was most recently slid by an acked op and no longer needs to be re-slid.
+	 */
+	clearLocalSlide(): void;
+
+	/**
+	 * Set a bounding reference which this reference cannot slide past.
+	 * See {@link clampToBoundingReference} for how to enforce this.
+	 *
+	 * @param ref - The reference that bounds this reference.
+	 */
+	setBoundingReference(ref: ReferencePosition): void;
+
+	/**
+	 * Enforce the bounding reference set by {@link setBoundingReference}.
+	 * If this reference has slid past its bounding reference,
+	 * it becomes a clone of its bounding reference.
+	 */
+	clampToBoundingReference(): void;
 
 	readonly trackingCollection: TrackingGroupCollection;
-	setBoundingReference(ref: ReferencePosition): void;
-	clampToBoundingReference(): void;
 }
 
 /**
@@ -86,6 +137,8 @@ class LocalReference implements LocalReferencePosition {
 	private offset: number = 0;
 	private listNode: ListNode<LocalReference> | undefined;
 	private _boundingReference: LocalReferencePosition | undefined;
+	private localCreate: LocalCreateInfo | undefined;
+	private localSlide: LocalSlideInfo | undefined;
 
 	public callbacks?:
 		| Partial<Record<"beforeSlide" | "afterSlide", (ref: LocalReferencePosition) => void>>
@@ -163,15 +216,19 @@ class LocalReference implements LocalReferencePosition {
 		if (this._boundingReference === undefined) {
 			return;
 		}
-		this.link(
-			this._boundingReference.getSegment(),
-			this._boundingReference.getOffset(),
-			(this._boundingReference as LocalReference).getListNode(),
-		);
-		this.slidingPreference =
-			this._boundingReference.slidingPreference ?? this.slidingPreference;
-		// this reference is now equivalent to the bounding reference
-		this._boundingReference = undefined;
+		const comp = compareReferencePositions(this, this._boundingReference);
+		// refs must always come after their boundingReference
+		if (comp < 0) {
+			this.link(
+				this._boundingReference.getSegment(),
+				this._boundingReference.getOffset(),
+				(this._boundingReference as LocalReference).getListNode(),
+			);
+			this.slidingPreference =
+				this._boundingReference.slidingPreference ?? this.slidingPreference;
+			// this reference is now equivalent to the bounding reference
+			this._boundingReference = undefined;
+		}
 	}
 
 	/**
@@ -180,6 +237,38 @@ class LocalReference implements LocalReferencePosition {
 	 */
 	public get boundingReference() {
 		return this._boundingReference;
+	}
+
+	public saveLocalCreate(info: LocalCreateInfo): void {
+		this.localCreate = info;
+	}
+
+	public getLocalCreate(): LocalCreateInfo | undefined {
+		return this.localCreate;
+	}
+
+	public clearLocalCreate(): void {
+		if (
+			this.localCreate !== undefined &&
+			this.localSlide !== undefined &&
+			this.localSlide.localSeq === this.localCreate.localSeq
+		) {
+			// The local slide happened on creation and there have been no later local slides.
+			this.clearLocalSlide();
+		}
+		this.localCreate = undefined;
+	}
+
+	public saveLocalSlide(info: LocalSlideInfo): void {
+		this.localSlide = info;
+	}
+
+	public getLocalSlide(): LocalSlideInfo | undefined {
+		return this.localSlide;
+	}
+
+	public clearLocalSlide(): void {
+		this.localSlide = undefined;
 	}
 }
 

@@ -79,7 +79,6 @@ import { PerspectiveImpl, Side } from "./perspective.js";
 // eslint-disable-next-line import/no-deprecated
 import { PropertySet, createMap, extend, extendIfUndefined } from "./properties.js";
 import {
-	compareReferencePositions,
 	DetachedReferencePosition,
 	ReferencePosition,
 	refGetTileLabels,
@@ -782,11 +781,10 @@ export class MergeTree {
 			const nextSegment = perspective.nextSegment(segment);
 			if (nextSegment?.localRefs !== undefined) {
 				for (const ref of nextSegment.localRefs) {
-					if (ref.localSlide === localSlide) {
+					const localSlideInfo = ref.getLocalSlide();
+					if (localSlideInfo?.localSeq === localSlide) {
 						// This slide has now been acked. No need to reslide on future inserts.
-						ref.localSlide = undefined;
-						ref.segmentBeforeLocalSlide = undefined;
-						ref.offsetBeforeLocalSlide = undefined;
+						ref.clearLocalSlide();
 					}
 				}
 			}
@@ -863,24 +861,29 @@ export class MergeTree {
 				(ref) => ref.slidingPreference === SlidingPreference.FORWARD,
 			);
 			forwardSlidingReferences.forEach((ref) => {
-				// Update localSlide.
-				// This is used to form the perspective to rebase this slide over concurrent remote insertions.
-				// remote slides should clear these fields.
-				if (ref.localSlide === undefined) {
-					if (localSeq) {
-						ref.localSlide = localSeq;
-						ref.segmentBeforeLocalSlide = ref.getSegment();
-						ref.offsetBeforeLocalSlide = ref.getOffset();
-					} else if (ref.localCreate) {
+				const localCreateInfo = ref.getLocalCreate();
+				if (localSeq === undefined && localCreateInfo === undefined) {
+					ref.clearLocalSlide();
+				} else {
+					// Update localSlide.
+					// This is used to form the perspective to rebase this slide over concurrent remote insertions.
+					// remote slides should clear these fields.
+					const refBeforeSlide = this.createLocalReferencePosition(
+						ref.getSegment() ?? "end",
+						ref.getOffset(),
+						(ref.refType & ~ReferenceType.SlideOnRemove) | // don't slide this saved reference
+							ReferenceType.StayOnRemove, // keep it around after we mark the segment removed.
+						undefined,
+						ref.slidingPreference,
+					);
+					if (localCreateInfo !== undefined) {
 						// This ref has not been created yet on other clients.
 						// Treat the slide as local and reslide on concurrent inserts.
-						ref.localSlide = ref.localCreate;
-						ref.segmentBeforeLocalSlide = ref.getSegment();
-						ref.offsetBeforeLocalSlide = ref.getOffset();
-					} else {
-						ref.localSlide = undefined;
-						ref.segmentBeforeLocalSlide = undefined;
-						ref.offsetBeforeLocalSlide = undefined;
+						ref.saveLocalSlide({ localSeq: localCreateInfo.localSeq, refBeforeSlide });
+					} else if (localSeq !== undefined) {
+						// Update localSlide.
+						// This is used to form the perspective to rebase this slide over concurrent remote insertions.
+						ref.saveLocalSlide({ localSeq, refBeforeSlide });
 					}
 				}
 			});
@@ -928,22 +931,30 @@ export class MergeTree {
 				(ref) => ref.slidingPreference === SlidingPreference.BACKWARD,
 			);
 			backwardSlidingReferences.forEach((ref) => {
-				if (localSeq !== undefined) {
+				const localCreateInfo = ref.getLocalCreate();
+				if (localSeq === undefined && localCreateInfo === undefined) {
+					ref.clearLocalSlide();
+				} else {
 					// Update localSlide.
 					// This is used to form the perspective to rebase this slide over concurrent remote insertions.
-					ref.localSlide = localSeq;
-					ref.segmentBeforeLocalSlide = ref.getSegment();
-					ref.offsetBeforeLocalSlide = ref.getOffset();
-				} else if (ref.localCreate) {
-					// This ref has not been created yet on other clients.
-					// Treat the slide as local and reslide on concurrent inserts.
-					ref.localSlide = ref.localCreate;
-					ref.segmentBeforeLocalSlide = ref.getSegment();
-					ref.offsetBeforeLocalSlide = ref.getOffset();
-				} else {
-					ref.localSlide = undefined;
-					ref.segmentBeforeLocalSlide = undefined;
-					ref.offsetBeforeLocalSlide = undefined;
+					// remote slides should clear these fields.
+					const refBeforeSlide = this.createLocalReferencePosition(
+						ref.getSegment() ?? "start",
+						ref.getOffset(),
+						(ref.refType & ~ReferenceType.SlideOnRemove) | // don't slide this saved reference
+							ReferenceType.StayOnRemove, // keep it around after we mark the segment removed.
+						undefined,
+						ref.slidingPreference,
+					);
+					if (localCreateInfo !== undefined) {
+						// This ref has not been created yet on other clients.
+						// Treat the slide as local and reslide on concurrent inserts.
+						ref.saveLocalSlide({ localSeq: localCreateInfo.localSeq, refBeforeSlide });
+					} else if (localSeq !== undefined) {
+						// Update localSlide.
+						// This is used to form the perspective to rebase this slide over concurrent remote insertions.
+						ref.saveLocalSlide({ localSeq, refBeforeSlide });
+					}
 				}
 			});
 			dstCollection.addAfterTombstones(backwardSlidingReferences);
@@ -953,13 +964,7 @@ export class MergeTree {
 
 		allSlidReferences.forEach((ref) => {
 			// Clamp references which have slid past their bounding reference.
-			if (ref.boundingReference !== undefined) {
-				const comp = compareReferencePositions(ref, ref.boundingReference);
-				// refs must always come after their boundingReference
-				if (comp < 0) {
-					ref.clampToBoundingReference();
-				}
-			}
+			ref.clampToBoundingReference();
 		});
 	}
 
@@ -1653,6 +1658,7 @@ export class MergeTree {
 			...(nextSegment.localRefs ?? []),
 		];
 		for (const ref of candidateRefs) {
+			const localSlide = ref.getLocalSlide();
 			if (
 				// reference slid forward to the beginning of the segment
 				((ref.slidingPreference === SlidingPreference.FORWARD && ref.getOffset() === 0) ||
@@ -1660,26 +1666,27 @@ export class MergeTree {
 					(ref.slidingPreference === SlidingPreference.BACKWARD &&
 						ref.getOffset() === ref.getSegment()?.cachedLength)) &&
 				// in response to a local move/remove
-				ref.localSlide !== undefined
+				localSlide !== undefined
 			) {
 				// Redo the slide with the new segments
 				const refPosBeforeSlide =
 					this.getPosition(
-						ref.segmentBeforeLocalSlide!,
+						localSlide.refBeforeSlide.getSegment()!,
 						seq,
 						this.collabWindow.clientId,
 						// before the local slide happened
-						ref.localSlide - 1,
-					) + ref.offsetBeforeLocalSlide!;
+						localSlide.localSeq - 1,
+					) + localSlide.refBeforeSlide.getOffset();
+				const localCreate = ref.getLocalCreate();
 				const dst = headPerspective.slidePlace(
 					{
 						pos: refPosBeforeSlide,
 						side: Side.Before, // ref.slidingPreference === SlidingPreference.FORWARD
 					},
-					ref.localCreateRefSeq ?? seq,
+					localCreate?.localCreateRefSeq ?? seq,
 					this.collabWindow.clientId,
 					// before the local slide happened
-					ref.localSlide - 1,
+					localSlide.localSeq - 1,
 				);
 				const dstSegment =
 					dst.pos === undefined
