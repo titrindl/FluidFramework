@@ -77,7 +77,8 @@ import {
  * Each position between a `{value}` and a `-` is a `SequencePlace`.
  *
  * The special endpoints `{start}` and `{end}` refer to positions outside the
- * contents of the string.
+ * contents of the string, and are encoded as position -1.
+ * After -1 means after `{start}`, before -1 means before `{end}`.
  *
  * This gives us 2N + 2 possible positions to refer to within a string, where N
  * is the number of characters.
@@ -93,7 +94,7 @@ import {
 export type SequencePlace = number | "start" | "end" | InteriorSequencePlace;
 
 /**
- * A sequence place that does not refer to the special endpoint segments.
+ * A sequence place with explicit sidedness.
  *
  * See {@link SequencePlace} for additional context.
  * @alpha
@@ -145,7 +146,7 @@ function decompressInterval(
 		sequenceNumber,
 		intervalType,
 		properties: { ...properties, [reservedRangeLabelsKey]: [label] },
-		stickiness,
+		stickiness: stickiness ?? IntervalStickiness.END,
 		startSide,
 		endSide,
 	};
@@ -176,26 +177,18 @@ function compressInterval(interval: ISerializedInterval): CompressedSerializedIn
 	return base;
 }
 
-export function endpointPosAndSide(
-	start: SequencePlace | undefined,
-	end: SequencePlace | undefined,
-) {
-	const startIsPlainEndpoint =
-		typeof start === "number" || start === "start" || start === "end";
-	const endIsPlainEndpoint = typeof end === "number" || end === "start" || end === "end";
+export function normalizeSequencePlace(place: SequencePlace): { pos: number; side: Side } {
+	if (typeof place === "number") {
+		return { pos: place, side: Side.Before };
+	}
+	if (place === "start") {
+		return { pos: -1, side: Side.After };
+	}
+	if (place === "end") {
+		return { pos: -1, side: Side.Before };
+	}
 
-	const startSide = startIsPlainEndpoint ? Side.Before : start?.side;
-	const endSide = endIsPlainEndpoint ? Side.Before : end?.side;
-
-	const startPos = startIsPlainEndpoint ? start : start?.pos;
-	const endPos = endIsPlainEndpoint ? end : end?.pos;
-
-	return {
-		startSide,
-		endSide,
-		startPos,
-		endPos,
-	};
+	return place;
 }
 
 export function toSequencePlace(
@@ -1116,10 +1109,11 @@ export class IntervalCollection<TInterval extends ISerializableInterval>
 		);
 		const rebased = { ...original };
 		const { start, end, sequenceNumber } = original;
-		if (start !== undefined) {
+		// -1 means beginning or end of the sequence, which we would never slide
+		if (start !== undefined && start !== -1) {
 			rebased.start = this.rebasePositionWithSegmentSlide(start, sequenceNumber, localSeq);
 		}
-		if (end !== undefined) {
+		if (end !== undefined && end !== -1) {
 			rebased.end = this.rebasePositionWithSegmentSlide(end, sequenceNumber, localSeq);
 		}
 		return rebased;
@@ -1264,15 +1258,8 @@ export class IntervalCollection<TInterval extends ISerializableInterval>
 			throw new LoggingError("attach must be called prior to adding intervals");
 		}
 
-		const { startSide, endSide, startPos, endPos } = endpointPosAndSide(start, end);
-
-		assert(
-			startPos !== undefined &&
-				endPos !== undefined &&
-				startSide !== undefined &&
-				endSide !== undefined,
-			0x793 /* start and end cannot be undefined because they were not passed in as undefined */,
-		);
+		const { pos: startPos, side: startSide } = normalizeSequencePlace(start);
+		const { pos: endPos, side: endSide } = normalizeSequencePlace(end);
 
 		const stickiness = computeStickinessFromSide(startPos, startSide, endPos, endSide);
 
@@ -1402,14 +1389,25 @@ export class IntervalCollection<TInterval extends ISerializableInterval>
 					setSlideOnRemove(newInterval.end);
 				}
 			}
+
 			const serializedInterval: SerializedIntervalDelta = interval.serialize();
-			const { startPos, startSide, endPos, endSide } = endpointPosAndSide(start, end);
-			const stickiness = computeStickinessFromSide(startPos, startSide, endPos, endSide);
-			serializedInterval.start = startPos;
-			serializedInterval.end = endPos;
-			serializedInterval.startSide = startSide;
-			serializedInterval.endSide = endSide;
-			serializedInterval.stickiness = stickiness;
+			if (start !== undefined && end !== undefined) {
+				const { pos: startPos, side: startSide } = normalizeSequencePlace(start);
+				const { pos: endPos, side: endSide } = normalizeSequencePlace(end);
+				const stickiness = computeStickinessFromSide(startPos, startSide, endPos, endSide);
+				serializedInterval.start = startPos;
+				serializedInterval.end = endPos;
+				serializedInterval.startSide = startSide;
+				serializedInterval.endSide = endSide;
+				serializedInterval.stickiness = stickiness;
+			} else {
+				// the start and end of the interval aren't changing, omit them from the serialized interval
+				serializedInterval.start = undefined;
+				serializedInterval.end = undefined;
+				serializedInterval.startSide = undefined;
+				serializedInterval.endSide = undefined;
+				serializedInterval.stickiness = undefined;
+			}
 			// Emit a property bag containing the ID and the other (if any) properties changed
 			serializedInterval.properties = {
 				[reservedIntervalIdKey]: interval.getIntervalId(),

@@ -7,7 +7,7 @@
 
 import { Client } from "@fluidframework/merge-tree/internal";
 
-import { SequencePlace, endpointPosAndSide } from "../intervalCollection.js";
+import { SequencePlace, Side, normalizeSequencePlace } from "../intervalCollection.js";
 import { IntervalNode, IntervalTree } from "../intervalTree.js";
 import {
 	IIntervalHelpers,
@@ -145,16 +145,18 @@ export class OverlappingIntervalsIndex<TInterval extends ISerializableInterval>
 	}
 
 	public findOverlappingIntervals(start: SequencePlace, end: SequencePlace): TInterval[] {
-		const { startPos, endPos } = endpointPosAndSide(start, end);
+		const { pos: startPos, side: startSide } = normalizeSequencePlace(start);
+		const { pos: endPos, side: endSide } = normalizeSequencePlace(end);
 
-		if (
-			startPos === undefined ||
-			endPos === undefined ||
-			(typeof startPos === "number" && typeof endPos === "number" && endPos < startPos) ||
-			(startPos === "end" && endPos !== "end") ||
-			(startPos !== "start" && endPos === "start") ||
-			this.intervalTree.intervals.isEmpty()
-		) {
+		const invertedSearchInterval =
+			(startPos !== -1 && endPos !== -1 && endPos < startPos) ||
+			(startPos === -1 && // start is the end of the sequence, but end is somewhere earlier
+				startSide === Side.Before &&
+				!(endPos === -1 && endSide === Side.Before)) ||
+			(endPos === -1 && // end is the start of the sequence, but start is somewhere later
+				endSide === Side.After &&
+				!(startPos === -1 && startSide === Side.After));
+		if (invertedSearchInterval || this.intervalTree.intervals.isEmpty()) {
 			return [];
 		}
 		const transientInterval = this.helpers.create(
@@ -163,6 +165,9 @@ export class OverlappingIntervalsIndex<TInterval extends ISerializableInterval>
 			end,
 			this.client,
 			IntervalType.Transient,
+			undefined,
+			undefined,
+			true,
 		);
 
 		const overlappingIntervalNodes = this.intervalTree.match(transientInterval);

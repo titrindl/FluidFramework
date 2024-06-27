@@ -145,8 +145,12 @@ export function indicesFromSequenceInterval(
 	}
 	const end = sharedString.localReferencePositionToPosition(interval.end);
 	return [
-		interval.startSide === Side.Before ? start : start + 1,
-		interval.endSide === Side.Before ? end : end + 1,
+		interval.startSide === Side.Before || interval.start.getSegment()?.endpointType === "start"
+			? start
+			: start + 1,
+		interval.endSide === Side.Before || interval.end.getSegment()?.endpointType === "start"
+			? end
+			: end + 1,
 	];
 }
 
@@ -180,14 +184,25 @@ export function assertInterval(
 	const [expectedStart, expectedEnd] = expected;
 	assert.equal(
 		actual.startSide,
-		typeof expectedStart === "object" ? expectedStart.side : Side.Before,
+		typeof expectedStart === "object"
+			? expectedStart.side
+			: expectedStart === "start"
+				? Side.After
+				: Side.Before,
 		"unexpected start side",
 	);
 	const actualStart = sharedString.localReferencePositionToPosition(actual.start);
-	assert.equal(actualStart, expectedPositionFromSequencePlace(expectedStart, -1));
+	assert.equal(
+		actualStart,
+		expectedPositionFromSequencePlace(expectedStart, sharedString.getLength()),
+	);
 	assert.equal(
 		actual.endSide,
-		typeof expectedEnd === "object" ? expectedEnd.side : Side.Before,
+		typeof expectedEnd === "object"
+			? expectedEnd.side
+			: expectedEnd === "start"
+				? Side.After
+				: Side.Before,
 		"unexpected end side",
 	);
 	const actualEnd = sharedString.localReferencePositionToPosition(actual.end);

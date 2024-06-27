@@ -1587,7 +1587,7 @@ describe("SharedString interval collections", () => {
 				end: { pos: 3, side: Side.After },
 			});
 			assert.equal(interval1.stickiness, IntervalStickiness.START);
-			assert.equal(interval1.startSide, Side.Before);
+			assert.equal(interval1.startSide, Side.After); // 'start' means after the startOfTree segment
 			assert.equal(interval1.endSide, Side.After);
 			assert.equal(interval1.start.slidingPreference, SlidingPreference.BACKWARD);
 			assert.equal(interval1.end.slidingPreference, SlidingPreference.BACKWARD);
@@ -2129,6 +2129,7 @@ describe("the start and end positions of intervals are updated in response to ed
 			expected: ["start", 0],
 			// TODO: #8111: enable after interval side is correctly loaded from summary for endpoints at start or end.
 			// skip: ["slide interval loaded from summary"],
+			only: ["slide interval loaded from summary"],
 		},
 		{
 			interval: [2, 5],
@@ -2150,11 +2151,11 @@ describe("the start and end positions of intervals are updated in response to ed
 			interval: [8, "end"],
 			removeRange: [8, 10],
 			expected: ["end", "end"],
+			// only: ["rebase interval over removal"],
 			skip: [
 				// TODO: #8111: enable after interval side is correctly loaded from summary for endpoints at start or end.
 				// "slide interval loaded from summary",
 			],
-			// only: ["slide interval loaded from summary"],
 		},
 		// remove more than the entire interval
 		// end should slide to beginning, which slides back to beginning of removal

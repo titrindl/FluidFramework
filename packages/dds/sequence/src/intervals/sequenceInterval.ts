@@ -31,7 +31,7 @@ import {
 	SequencePlace,
 	Side,
 	computeStickinessFromSide,
-	endpointPosAndSide,
+	normalizeSequencePlace,
 	reservedIntervalIdKey,
 	sidesFromStickiness,
 } from "../intervalCollection.js";
@@ -354,7 +354,12 @@ export class SequenceInterval implements ISerializableInterval {
 		localSeq?: number,
 		useNewSlidingBehavior: boolean = false,
 	) {
-		const { startSide, endSide, startPos, endPos } = endpointPosAndSide(start, end);
+		const { pos: startPos, side: startSide } =
+			start !== undefined
+				? normalizeSequencePlace(start)
+				: { pos: undefined, side: undefined };
+		const { pos: endPos, side: endSide } =
+			end !== undefined ? normalizeSequencePlace(end) : { pos: undefined, side: undefined };
 		const stickiness = computeStickinessFromSide(
 			startPos ?? this.start.getSegment()?.endpointType,
 			startSide ?? this.startSide,
@@ -380,7 +385,6 @@ export class SequenceInterval implements ISerializableInterval {
 				undefined,
 				localSeq,
 				startReferenceSlidingPreference(stickiness),
-				startReferenceSlidingPreference(stickiness) === SlidingPreference.BACKWARD,
 				useNewSlidingBehavior,
 			);
 			if (this.start.properties) {
@@ -398,7 +402,6 @@ export class SequenceInterval implements ISerializableInterval {
 				undefined,
 				localSeq,
 				endReferenceSlidingPreference(stickiness),
-				endReferenceSlidingPreference(stickiness) === SlidingPreference.FORWARD,
 				useNewSlidingBehavior,
 			);
 			if (this.end.properties) {
@@ -484,7 +487,6 @@ function createPositionReference(
 	fromSnapshot?: boolean,
 	localSeq?: number,
 	slidingPreference?: SlidingPreference,
-	exclusive: boolean = false,
 	useNewSlidingBehavior: boolean = false,
 ): LocalReferencePosition {
 	let segoff;
@@ -496,6 +498,11 @@ function createPositionReference(
 		);
 		if (pos === "start" || pos === "end") {
 			segoff = pos;
+		} else if (useNewSlidingBehavior && pos === -1) {
+			segoff =
+				slidingPreference === SlidingPreference.BACKWARD
+					? ("start" as const)
+					: ("end" as const);
 		} else {
 			segoff = client.getContainingSegment(pos, {
 				referenceSequenceNumber: op.referenceSequenceNumber,
@@ -508,10 +515,22 @@ function createPositionReference(
 			(refType & ReferenceType.SlideOnRemove) === 0 || !!fromSnapshot,
 			0x2f6 /* SlideOnRemove references must be op created */,
 		);
-		segoff =
-			pos === "start" || pos === "end"
-				? pos
-				: client.getContainingSegment(pos, undefined, localSeq);
+		if (pos === "start" || pos === "end") {
+			segoff = pos;
+		} else if (pos === -1 && useNewSlidingBehavior) {
+			segoff =
+				slidingPreference === SlidingPreference.BACKWARD
+					? ("start" as const)
+					: ("end" as const);
+		} else {
+			segoff = client.getContainingSegment(pos, undefined, localSeq);
+			if (useNewSlidingBehavior === true && segoff.segment === undefined) {
+				segoff =
+					slidingPreference === SlidingPreference.BACKWARD
+						? ("start" as const) // slides back to start
+						: ("end" as const); // slides forward to end
+			}
+		}
 	}
 
 	return createPositionReferenceFromSegoff(
@@ -522,7 +541,7 @@ function createPositionReference(
 		localSeq,
 		fromSnapshot,
 		slidingPreference,
-		exclusive,
+		useNewSlidingBehavior,
 	);
 }
 
@@ -536,17 +555,8 @@ export function createSequenceInterval(
 	fromSnapshot?: boolean,
 	useNewSlidingBehavior: boolean = false,
 ): SequenceInterval {
-	const { startPos, startSide, endPos, endSide } = endpointPosAndSide(
-		start ?? "start",
-		end ?? "end",
-	);
-	assert(
-		startPos !== undefined &&
-			endPos !== undefined &&
-			startSide !== undefined &&
-			endSide !== undefined,
-		0x794 /* start and end cannot be undefined because they were not passed in as undefined */,
-	);
+	const { pos: startPos, side: startSide } = normalizeSequencePlace(start ?? "start");
+	const { pos: endPos, side: endSide } = normalizeSequencePlace(end ?? "end");
 	const stickiness = computeStickinessFromSide(startPos, startSide, endPos, endSide);
 	let beginRefType = ReferenceType.RangeBegin;
 	let endRefType = ReferenceType.RangeEnd;
@@ -574,7 +584,6 @@ export function createSequenceInterval(
 		fromSnapshot,
 		undefined,
 		startReferenceSlidingPreference(stickiness),
-		startReferenceSlidingPreference(stickiness) === SlidingPreference.BACKWARD,
 		useNewSlidingBehavior,
 	);
 
@@ -586,7 +595,6 @@ export function createSequenceInterval(
 		fromSnapshot,
 		undefined,
 		endReferenceSlidingPreference(stickiness),
-		endReferenceSlidingPreference(stickiness) === SlidingPreference.FORWARD,
 		useNewSlidingBehavior,
 	);
 
