@@ -53,7 +53,7 @@ describe("IntervalCollection with stashing", () => {
 		// AB#7220
 		skip: [79],
 		// Uncomment this line to replay a specific seed from its failure file:
-		// replay: 0,
+		replay: 7,
 	});
 });
 

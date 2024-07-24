@@ -74,15 +74,24 @@ export interface LocalReferencePosition extends ReferencePosition {
 }
 
 /**
+ * @internal
+ */
+export interface LocalReferencePositionInternal extends LocalReferencePosition {
+	setBoundingReference(ref: ReferencePosition): void;
+	clampToBoundingReference(): void;
+}
+
+/**
  * @privateRemarks This should not be exported outside merge tree.
  * @internal
  */
-class LocalReference implements LocalReferencePosition {
+class LocalReference implements LocalReferencePositionInternal {
 	public properties: PropertySet | undefined;
 
 	private segment: ISegment | undefined;
 	private offset: number = 0;
 	private listNode: ListNode<LocalReference> | undefined;
+	private _boundingReference: LocalReferencePosition | undefined;
 
 	public callbacks?:
 		| Partial<Record<"beforeSlide" | "afterSlide", (ref: LocalReferencePosition) => void>>
@@ -92,10 +101,37 @@ class LocalReference implements LocalReferencePosition {
 		return (this._trackingCollection ??= new TrackingGroupCollection(this));
 	}
 
+	public setBoundingReference(ref: LocalReferencePosition) {
+		this._boundingReference = ref;
+	}
+
+	public clampToBoundingReference(): void {
+		if (this._boundingReference === undefined) {
+			return;
+		}
+
+		this.link(
+			this._boundingReference.getSegment(),
+			this._boundingReference.getOffset(),
+			(this._boundingReference as LocalReference).getListNode(),
+		);
+		this.slidingPreference =
+			this._boundingReference.slidingPreference ?? this.slidingPreference;
+		this._boundingReference = undefined;
+	}
+
+	/**
+	 * The reference that bounds this reference.
+	 * This reference will never slide past the bounding reference.
+	 */
+	public get boundingReference() {
+		return this._boundingReference;
+	}
+
 	constructor(
 		public refType = ReferenceType.Simple,
 		properties?: PropertySet,
-		public readonly slidingPreference: SlidingPreference = SlidingPreference.FORWARD,
+		public slidingPreference: SlidingPreference = SlidingPreference.FORWARD,
 		public readonly canSlideToEndpoint?: boolean,
 	) {
 		_validateReferenceType(refType);
@@ -126,7 +162,7 @@ class LocalReference implements LocalReferencePosition {
 		this.offset = offset;
 	}
 
-	public isLeaf() {
+	public isLeaf(): this is ISegment {
 		return false;
 	}
 

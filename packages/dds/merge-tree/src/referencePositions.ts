@@ -100,6 +100,13 @@ export interface ReferencePosition {
 	 */
 	addProperties(newProps: PropertySet): void;
 	isLeaf(): this is ISegment;
+
+	/**
+	 * The reference which this reference cannot slide past.
+	 * If this reference would slide past its bounding reference,
+	 * it will instead become equivalent to the bounding reference.
+	 */
+	boundingReference?: ReferencePosition;
 }
 
 /**

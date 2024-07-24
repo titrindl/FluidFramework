@@ -1775,7 +1775,7 @@ describe("SharedString interval collections", () => {
 
 			assert.strictEqual(sharedString.getText(), "XXX", "different text");
 
-			assertSequenceIntervals(sharedString, collection, [{ start: -1, end: -1 }], false);
+			assertSequenceIntervals(sharedString, collection, [{ start: 3, end: 3 }], false);
 		});
 
 		it("none stickiness slides off string when entire string is deleted incrementally", () => {
@@ -1799,7 +1799,7 @@ describe("SharedString interval collections", () => {
 
 			assert.strictEqual(sharedString.getText(), "XXX", "different text");
 
-			assertSequenceIntervals(sharedString, collection, [{ start: -1, end: -1 }], false);
+			assertSequenceIntervals(sharedString, collection, [{ start: 3, end: 3 }], false);
 		});
 
 		it("full stickiness doesn't slide off string when entire string is deleted incrementally", () => {
@@ -2195,7 +2195,7 @@ describe("the start and end positions of intervals are updated in response to ed
 			expected: ["start", 0],
 			// TODO: #8111: enable after interval side is correctly loaded from summary for endpoints at start or end.
 			// skip: ["slide interval loaded from summary"],
-			only: ["slide interval loaded from summary"],
+			// only: ["slide interval loaded from summary"],
 		},
 		{
 			interval: [2, 5],

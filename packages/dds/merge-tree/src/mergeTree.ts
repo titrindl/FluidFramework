@@ -26,6 +26,7 @@ import {
 	SlidingPreference,
 	anyLocalReferencePosition,
 	filterLocalReferencePositions,
+	type LocalReferencePositionInternal,
 } from "./localReference.js";
 import {
 	IMergeTreeDeltaOpArgs,
@@ -80,6 +81,7 @@ import { PerspectiveImpl, isSegmentPresent } from "./perspective.js";
 // eslint-disable-next-line import/no-deprecated
 import { PropertySet, createMap, extend, extendIfUndefined } from "./properties.js";
 import {
+	compareReferencePositions,
 	DetachedReferencePosition,
 	ReferencePosition,
 	refGetTileLabels,
@@ -347,10 +349,12 @@ function getSlideToSegment(
 
 	let maybeEndpoint: "start" | "end" | undefined;
 
-	if (slidingPreference === SlidingPreference.BACKWARD) {
-		maybeEndpoint = "start";
-	} else if (slidingPreference === SlidingPreference.FORWARD) {
-		maybeEndpoint = "end";
+	if (useNewSlidingBehavior) {
+		if (slidingPreference === SlidingPreference.BACKWARD) {
+			maybeEndpoint = "start";
+		} else if (slidingPreference === SlidingPreference.FORWARD) {
+			maybeEndpoint = "end";
+		}
 	}
 
 	return [result.seg, maybeEndpoint];
@@ -750,16 +754,20 @@ export class MergeTree {
 			}
 
 			const nonEndpointRefsToAdd = currentSlideGroup.map((collection) =>
-				filterLocalReferencePositions(
-					collection,
-					(ref) => pred(ref) && (maybeEndpoint ? !ref.canSlideToEndpoint : true),
+				Array.from(
+					filterLocalReferencePositions(
+						collection,
+						(ref) => pred(ref) && (maybeEndpoint ? !ref.canSlideToEndpoint : true),
+					),
 				),
 			);
 
 			const endpointRefsToAdd = currentSlideGroup.map((collection) =>
-				filterLocalReferencePositions(
-					collection,
-					(ref) => pred(ref) && !!ref.canSlideToEndpoint,
+				Array.from(
+					filterLocalReferencePositions(
+						collection,
+						(ref) => pred(ref) && !!ref.canSlideToEndpoint,
+					),
 				),
 			);
 
@@ -788,6 +796,30 @@ export class MergeTree {
 							collection.removeLocalRef(ref);
 							ref.callbacks?.afterSlide?.(ref);
 						}
+					}
+				}
+			}
+
+			const slidReferences = Array.from(
+				nonEndpointRefsToAdd
+					.reduce((prev, cur) => prev.concat(Array.from(cur)), [] as LocalReferencePosition[])
+					.concat(
+						endpointRefsToAdd.reduce(
+							(prev, cur) => prev.concat(Array.from(cur)),
+							[] as LocalReferencePosition[],
+						),
+					),
+			);
+			for (const ref of slidReferences) {
+				if (ref.boundingReference !== undefined) {
+					const comp = compareReferencePositions(ref, ref.boundingReference);
+					if (
+						// ref has slid forward and is now after the bounding reference
+						(ref.refType & ReferenceType.RangeBegin && comp > 0) ||
+						// or ref has slid backward and is now before the bounding reference
+						(ref.refType & ReferenceType.RangeEnd && comp < 0)
+					) {
+						(ref as LocalReferencePositionInternal).clampToBoundingReference();
 					}
 				}
 			}

@@ -24,6 +24,7 @@ import {
 	minReferencePosition,
 	refTypeIncludesFlag,
 	reservedRangeLabelsKey,
+	type LocalReferencePositionInternal,
 } from "@fluidframework/merge-tree/internal";
 import { UsageError } from "@fluidframework/telemetry-utils/internal";
 
@@ -185,8 +186,12 @@ export class SequenceInterval implements ISerializableInterval {
 	 * {@inheritDoc ISerializableInterval.serialize}
 	 */
 	public serialize(): ISerializedInterval {
-		const startPosition = this.client.localReferencePositionToPosition(this.start);
-		const endPosition = this.client.localReferencePositionToPosition(this.end);
+		const startPosition = this.start.getSegment()?.endpointType
+			? -1
+			: this.client.localReferencePositionToPosition(this.start);
+		const endPosition = this.end.getSegment()?.endpointType
+			? -1
+			: this.client.localReferencePositionToPosition(this.end);
 		const { startSide, endSide } = sidesFromStickiness(this.stickiness);
 		const serializedInterval: ISerializedInterval = {
 			end: endPosition,
@@ -598,6 +603,9 @@ export function createSequenceInterval(
 		endReferenceSlidingPreference(stickiness),
 		useNewSlidingBehavior,
 	);
+	if (intervalType !== IntervalType.Transient) {
+		(endLref as LocalReferencePositionInternal).setBoundingReference(startLref);
+	}
 
 	const rangeProp = {
 		[reservedRangeLabelsKey]: [label],

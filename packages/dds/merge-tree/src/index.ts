@@ -36,6 +36,7 @@ export {
 	createDetachedLocalReferencePosition,
 	LocalReferenceCollection,
 	LocalReferencePosition,
+	LocalReferencePositionInternal,
 	SlidingPreference,
 } from "./localReference.js";
 export {

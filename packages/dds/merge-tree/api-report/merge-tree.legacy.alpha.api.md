@@ -654,6 +654,7 @@ export type PropertySet = MapLike<any>;
 export interface ReferencePosition {
     // (undocumented)
     addProperties(newProps: PropertySet): void;
+    boundingReference?: ReferencePosition;
     getOffset(): number;
     getSegment(): ISegment | undefined;
     // (undocumented)
