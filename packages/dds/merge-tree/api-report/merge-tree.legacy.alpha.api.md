@@ -413,6 +413,7 @@ export interface IMergeTreeTextHelper {
 export interface IMoveInfo {
     localMovedSeq?: number;
     movedClientIds: number[];
+    movedRangeExpansion: RangeExpansion;
     movedSeq: number;
     movedSeqs: number[];
     moveDst?: ReferencePosition;
@@ -655,6 +656,18 @@ export enum PropertiesRollback {
 
 // @alpha
 export type PropertySet = MapLike<any>;
+
+// @alpha (undocumented)
+export enum RangeExpansion {
+    // (undocumented)
+    Both = 3,
+    // (undocumented)
+    Far = 2,
+    // (undocumented)
+    Near = 1,
+    // (undocumented)
+    None = 0
+}
 
 // @alpha
 export interface ReferencePosition {

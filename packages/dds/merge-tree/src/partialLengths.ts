@@ -670,10 +670,13 @@ export class PartialSequenceLengths {
 		let remoteObliteratedLen: number | undefined;
 
 		// it's not possible to have an overlapping obliterate and remove that are both local
-		assert(
-			(!moveIsLocal && !removalIsLocal) || moveIsLocal !== removalIsLocal,
-			0x870 /* overlapping local obliterate and remove */,
-		);
+		// TT: This is incorrect.
+		// An obliteration containing removed segments should still mark the removed segments as obliterated
+		// so that concurrent insertions only need to look ath their immediate neighbors.
+		// assert(
+		// 	(!moveIsLocal && !removalIsLocal) || moveIsLocal !== removalIsLocal,
+		// 	0x870 /* overlapping local obliterate and remove */,
+		// );
 
 		const removeHappenedFirst =
 			removalInfo &&

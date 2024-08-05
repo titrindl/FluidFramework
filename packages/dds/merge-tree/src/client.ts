@@ -80,6 +80,7 @@ import { SnapshotV1 } from "./snapshotV1.js";
 import { SnapshotLegacy } from "./snapshotlegacy.js";
 // eslint-disable-next-line import/no-deprecated
 import { IMergeTreeTextHelper } from "./textSegment.js";
+import { Side, type SequencePlace } from "./sequencePlace.js";
 
 type IMergeTreeDeltaRemoteOpArgs = Omit<IMergeTreeDeltaOpArgs, "sequencedMessage"> &
 	Required<Pick<IMergeTreeDeltaOpArgs, "sequencedMessage">>;
@@ -264,7 +265,10 @@ export class Client extends TypedEventEmitter<IClientEvents> {
 	 * @param end - The exclusive end of the range to obliterate
 	 */
 	// eslint-disable-next-line import/no-deprecated
-	public obliterateRangeLocal(start: number, end: number): IMergeTreeObliterateMsg {
+	public obliterateRangeLocal(
+		start: SequencePlace,
+		end: SequencePlace,
+	): IMergeTreeObliterateMsg {
 		const obliterateOp = createObliterateRangeOp(start, end);
 		this.applyObliterateRangeOp({ op: obliterateOp });
 		return obliterateOp;
@@ -485,8 +489,8 @@ export class Client extends TypedEventEmitter<IClientEvents> {
 		const range = this.getValidOpRange(op, clientArgs);
 
 		this._mergeTree.obliterateRange(
-			range.start,
-			range.end,
+			{ pos: range.start, side: op.before1 ? Side.Before : Side.After },
+			{ pos: range.end, side: op.before2 ? Side.Before : Side.After },
 			clientArgs.referenceSequenceNumber,
 			clientArgs.clientId,
 			clientArgs.sequenceNumber,
@@ -622,7 +626,9 @@ export class Client extends TypedEventEmitter<IClientEvents> {
 			//
 			if (
 				(op.type !== MergeTreeDeltaType.INSERT || end !== undefined) &&
-				(end === undefined || end <= start!)
+				(end === undefined ||
+					end < start! ||
+					(end === start && (op as IMergeTreeObliterateMsg).before1 !== true))
 			) {
 				invalidPositions.push("end");
 			}

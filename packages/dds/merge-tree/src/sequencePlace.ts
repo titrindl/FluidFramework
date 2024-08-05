@@ -55,6 +55,19 @@ export enum Side {
 	After = 1,
 }
 
+export function normalizePlace(place: SequencePlace): InteriorSequencePlace {
+	if (typeof place === "number") {
+		return { pos: place, side: Side.Before };
+	}
+	if (place === "start") {
+		return { pos: -1, side: Side.After };
+	}
+	if (place === "end") {
+		return { pos: -1, side: Side.Before };
+	}
+	return place;
+}
+
 /**
  * Returns the position and side of the start and end of a sequence.
  *

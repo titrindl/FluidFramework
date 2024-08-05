@@ -60,6 +60,7 @@ export {
 	debugMarkerToString,
 	IJSONMarkerSegment,
 	IMergeNodeCommon,
+	RangeExpansion,
 	IMoveInfo,
 	IRemovalInfo,
 	ISegment,

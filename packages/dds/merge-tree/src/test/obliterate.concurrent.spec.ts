@@ -11,6 +11,9 @@ import { MergeTree } from "../mergeTree.js";
 
 import { ReconnectTestHelper } from "./reconnectHelper.js";
 import { useStrictPartialLengthChecks } from "./testUtils.js";
+import { Side } from "../sequencePlace.js";
+import { walkAllChildSegments } from "../mergeTreeNodeWalk.js";
+import { TextSegment } from "../textSegment.js";
 
 /**
  * Some tests contain ASCII diagrams of the trees to make it easier to reason about
@@ -62,12 +65,12 @@ for (const incremental of [true, false]) {
 
 			helper.insertText("A", 0, "ABCDEFGH");
 			helper.processAllOps();
-			helper.removeRange("C", 0, 3);
-			helper.insertText("C", 1, "123456");
-			helper.removeRange("A", 5, 7);
-			helper.insertText("A", 0, "IJKLM");
-			helper.obliterateRange("A", 2, 11);
-			helper.removeRange("A", 1, 2);
+			helper.removeRange("C", 0, 3); // "DEFGH"
+			helper.insertText("C", 1, "123456"); // "D123456EFGH"
+			helper.removeRange("A", 5, 7); // "ABCDEH"
+			helper.insertText("A", 0, "IJKLM"); // "IJKLMABCDEH"
+			helper.obliterateRange("A", 2, 11); // "IJ[KLMABCDE)H"
+			helper.removeRange("A", 1, 2); // "I_[KLMABCDE)H"
 			helper.processAllOps();
 
 			assert.equal(helper.clients.A.getText(), "I");
@@ -135,15 +138,18 @@ for (const incremental of [true, false]) {
 			}
 		});
 
-		it("does not delete when obliterate immediately after insert", () => {
+		it("does not delete concurrent insertion outside of inclusive obliteration bounds", () => {
+			// What was this test originally testing? It seems to expect the W to be inserted outside of both obliterated ranges,
+			// but this seems inconsitent with the desired endpoint expansion behavior.
+			// I'm changing this test to focus on inclusive obliteration ranges not expanding.
 			const helper = new ReconnectTestHelper();
 
 			helper.insertText("C", 0, "A");
-			helper.obliterateRange("C", 0, 1);
-			helper.insertText("B", 0, "W");
-			helper.insertText("C", 0, "D");
-			helper.obliterateRange("C", 0, 1);
-			helper.processAllOps();
+			helper.obliterateRange("C", { pos: 0, side: Side.Before }, { pos: 0, side: Side.After }); // "[A]"
+			helper.insertText("B", 0, "W"); // "W"
+			helper.insertText("C", 0, "D"); // "D[A]"
+			helper.obliterateRange("C", { pos: 0, side: Side.Before }, { pos: 0, side: Side.After }); // "[D][A)"
+			helper.processAllOps(); // "[D]W[A]"
 
 			assert.equal(helper.clients.A.getText(), "W");
 			assert.equal(helper.clients.B.getText(), "W");
@@ -157,10 +163,10 @@ for (const incremental of [true, false]) {
 
 			helper.insertText("C", 0, "A");
 			helper.insertText("B", 0, "X");
-			helper.obliterateRange("C", 0, 1);
+			helper.obliterateRange("C", { pos: 0, side: Side.Before }, { pos: 0, side: Side.After }); // "[A]"
 			helper.insertText("C", 0, "B");
-			helper.obliterateRange("C", 0, 1);
-			helper.processAllOps();
+			helper.obliterateRange("C", { pos: 0, side: Side.Before }, { pos: 0, side: Side.After }); // "[B][A]"
+			helper.processAllOps(); // [B]X[A]
 
 			assert.equal(helper.clients.A.getText(), "X");
 			assert.equal(helper.clients.B.getText(), "X");
@@ -205,11 +211,11 @@ for (const incremental of [true, false]) {
 		it("deletes segment inserted into locally obliterated segment", () => {
 			const helper = new ReconnectTestHelper();
 
-			helper.insertText("C", 0, "A");
-			helper.insertText("B", 0, "X");
-			helper.insertText("C", 0, "B");
-			helper.obliterateRange("C", 0, 2);
-			helper.processAllOps();
+			helper.insertText("C", 0, "A"); // "A"
+			helper.insertText("B", 0, "X"); // "X"
+			helper.insertText("C", 0, "B"); // "BA"
+			helper.obliterateRange("C", 0, 2); // "[BA)"
+			helper.processAllOps(); // "[BXA)"
 
 			assert.equal(helper.clients.A.getText(), "");
 			assert.equal(helper.clients.B.getText(), "");
@@ -245,10 +251,10 @@ for (const incremental of [true, false]) {
 			helper.insertText("A", 0, "0");
 			helper.insertText("C", 0, "123");
 			helper.insertText("B", 0, "BB");
-			helper.insertText("C", 0, "GGG");
-			helper.obliterateRange("C", 2, 5);
-			helper.insertText("B", 1, "A");
-			helper.processAllOps();
+			helper.insertText("C", 0, "GGG"); // GGG123
+			helper.obliterateRange("C", 2, 5); // GG[G12)3
+			helper.insertText("B", 1, "A"); // "BAB"
+			helper.processAllOps(); // "GG[GBAB12)30"
 
 			assert.equal(helper.clients.A.getText().length, helper.clients.A.getLength());
 			assert.equal(helper.clients.B.getText().length, helper.clients.B.getLength());
@@ -307,10 +313,10 @@ for (const incremental of [true, false]) {
 			helper.insertText("C", 0, "d");
 			helper.insertText("C", 0, "c");
 			helper.insertText("C", 0, "b");
-			helper.insertText("C", 0, "a");
-			helper.processAllOps();
-			helper.obliterateRange("B", 0, 2);
-			helper.removeRange("B", 4, 5);
+			helper.insertText("C", 0, "a"); // "abcde"
+			helper.processAllOps(); // "abcde123"
+			helper.obliterateRange("B", 0, 2); // "[ab)cde123"
+			helper.removeRange("B", 4, 5); // "[ab)cde1_3"
 			helper.processAllOps();
 
 			assert.equal(helper.clients.A.getText(), "cde13");
@@ -323,11 +329,11 @@ for (const incremental of [true, false]) {
 			const helper = new ReconnectTestHelper();
 
 			helper.insertText("B", 0, "DE");
-			helper.obliterateRange("B", 0, 1);
+			helper.obliterateRange("B", 0, 1); // "[D)E"
 			helper.insertText("A", 0, "X");
-			helper.insertText("B", 0, "ABC");
-			helper.obliterateRange("B", 2, 4);
-			helper.processAllOps();
+			helper.insertText("B", 0, "ABC"); // "ABC[D)E"
+			helper.obliterateRange("B", 2, 4); // "AB[C[D)E)"
+			helper.processAllOps(); // "AB[CX[D)E)"
 
 			assert.equal(helper.clients.A.getText(), "AB");
 			assert.equal(helper.clients.C.getText(), "AB");
@@ -711,14 +717,17 @@ for (const incremental of [true, false]) {
 			helper.insertText("C", 0, "B");
 			helper.insertText("C", 0, "C");
 			helper.insertText("A", 0, "1234");
-			helper.processAllOps();
-			helper.obliterateRange("C", 1, 3);
-			helper.insertText("A", 2, "D");
-			helper.insertText("A", 4, "E");
-			helper.processAllOps();
+			helper.processAllOps(); // 1234CBA
+			helper.obliterateRange("C", 1, 3); // 1[23)4CBA
+			helper.insertText("A", 2, "D"); // 12D34CBA
+			helper.insertText("A", 4, "E"); // 12D3E4CBA
+			helper.insertText("A", 1, "F"); // 1F2D3E4CBA
+			helper.processAllOps(); // 1F[2D3E)4CBA
+			// Since 'F' comes before '2', it is outside of the obliteration
+			// Since E comes before '4', it is inside of the obliteration
 
-			assert.equal(helper.clients.A.getText(), "1E4CBA");
-			assert.equal(helper.clients.B.getText(), "1E4CBA");
+			assert.equal(helper.clients.A.getText(), "1F4CBA");
+			assert.equal(helper.clients.B.getText(), "1F4CBA");
 
 			helper.logger.validate();
 		});
@@ -837,19 +846,50 @@ for (const incremental of [true, false]) {
 			// C-AB
 			// (C-A)-D-(B)
 
-			helper.insertText("C", 0, "AB");
-			helper.insertText("A", 0, "C");
-			helper.processAllOps();
+			helper.insertText("C", 0, "AB"); // AB
+			helper.insertText("A", 0, "C"); //  C
+			helper.processAllOps(); // CAB
 			helper.logger.validate();
 			// bug here: when the op is acked by client C, it would incorrectly give
 			// segment B the same movedSeq despite coming from a different op
-			helper.obliterateRange("C", 0, 2);
-			helper.insertText("B", 2, "D");
-			helper.obliterateRange("C", 0, 1);
-			helper.processAllOps();
+			helper.obliterateRange("C", 0, 2); // [CA)B
+			helper.insertText("B", 2, "D"); // CADB
+			helper.obliterateRange("C", 0, 1); // [CA)[B)
+			helper.processAllOps(); // [CAD)[B)
 
-			assert.equal(helper.clients.A.getText(), "D");
-			assert.equal(helper.clients.C.getText(), "D");
+			assert.equal(helper.clients.A.getText(), "");
+			assert.equal(helper.clients.C.getText(), "");
+
+			let aMovedSeq: number | undefined;
+			let bMovedSeq: number | undefined;
+			let cMovedSeq: number | undefined;
+			walkAllChildSegments(helper.clients.C.mergeTree.root, (seg) => {
+				if (seg.isLeaf() && TextSegment.is(seg)) {
+					if (seg.text === "A") {
+						aMovedSeq = seg.movedSeq;
+					}
+					if (seg.text === "B") {
+						bMovedSeq = seg.movedSeq;
+					}
+					if (seg.text === "C") {
+						cMovedSeq = seg.movedSeq;
+					}
+				}
+			});
+			assert.notEqual(aMovedSeq, bMovedSeq);
+			assert.equal(aMovedSeq, cMovedSeq);
+			// assert.notEqual(
+			// 	helper.clients.C.mergeTree.getContainingSegment(0, 1, helper.clients.C.getClientId())
+			// 		.segment?.movedSeq,
+			// 	helper.clients.C.mergeTree.getContainingSegment(1, 1, helper.clients.C.getClientId())
+			// 		.segment?.movedSeq,
+			// );
+			// assert.equal(
+			// 	helper.clients.C.mergeTree.getContainingSegment(1, 1, helper.clients.B.getClientId())
+			// 		.segment?.movedSeq,
+			// 	helper.clients.C.mergeTree.getContainingSegment(2, 3, helper.clients.B.getClientId())
+			// 		.segment?.movedSeq,
+			// );
 
 			helper.logger.validate();
 		});

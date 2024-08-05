@@ -70,6 +70,26 @@ export class PerspectiveImpl implements Perspective {
 	}
 }
 
+export function wasInsertedBefore(seg: ISegment, { refSeq, localSeq }: SeqTime): boolean {
+	// If seg.seq is undefined, then this segment has existed since minSeq.
+	// It may have been moved or removed since.
+	if (seg.seq !== undefined) {
+		if (seg.seq !== UnassignedSequenceNumber) {
+			if (!seqLTE(seg.seq, refSeq)) {
+				return false;
+			}
+		} else if (
+			seg.localSeq !== undefined && // seg.seq === UnassignedSequenceNumber
+			// If the current perspective does not include local sequence numbers,
+			// then this segment does not exist yet.
+			(localSeq === undefined || seg.localSeq > localSeq)
+		) {
+			return false;
+		}
+	}
+	return true;
+}
+
 /**
  * Determines if the given segment was removed before the given perspective.
  * @param seg - The segment to check.
@@ -121,22 +141,8 @@ export function wasRemovedOrMovedBefore(seg: ISegment, seqTime: SeqTime): boolea
  * and it was not removed or moved in the given perspective.
  */
 export function isSegmentPresent(seg: ISegment, seqTime: SeqTime): boolean {
-	const { refSeq, localSeq } = seqTime;
-	// If seg.seq is undefined, then this segment has existed since minSeq.
-	// It may have been moved or removed since.
-	if (seg.seq !== undefined) {
-		if (seg.seq !== UnassignedSequenceNumber) {
-			if (!seqLTE(seg.seq, refSeq)) {
-				return false;
-			}
-		} else if (
-			seg.localSeq !== undefined && // seg.seq === UnassignedSequenceNumber
-			// If the current perspective does not include local sequence numbers,
-			// then this segment does not exist yet.
-			(localSeq === undefined || seg.localSeq > localSeq)
-		) {
-			return false;
-		}
+	if (!wasInsertedBefore(seg, seqTime)) {
+		return false;
 	}
 	if (wasRemovedOrMovedBefore(seg, seqTime)) {
 		return false;

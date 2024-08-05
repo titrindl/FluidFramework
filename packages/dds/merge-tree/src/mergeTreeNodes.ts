@@ -95,6 +95,17 @@ export function toRemovalInfo(
 }
 
 /**
+ * @alpha
+ * @legacy
+ */
+export enum RangeExpansion {
+	None = 0b00,
+	Near = 0b01,
+	Far = 0b10,
+	Both = 0b11,
+}
+
+/**
  * Tracks information about when and where this segment was moved to.
  *
  * Note that merge-tree does not currently support moving and only supports
@@ -114,6 +125,11 @@ export interface IMoveInfo {
 	 * The first seq at which this segment was moved.
 	 */
 	movedSeq: number;
+
+	/**
+	 * Directions in which this move grows. If the segment is moved multiple times, this field reflects the union of moved ranges.
+	 */
+	movedRangeExpansion: RangeExpansion;
 
 	/**
 	 * All seqs at which this segment was moved. In the case of overlapping,
@@ -504,6 +520,7 @@ export abstract class BaseSegment implements ISegment {
 	public movedSeqs?: number[];
 	public movedClientIds?: number[];
 	public wasMovedOnInsert?: boolean | undefined;
+	public movedRangeExpansion?: RangeExpansion | undefined;
 	public index: number = 0;
 	public ordinal: string = "";
 	public cachedLength: number = 0;
@@ -679,6 +696,11 @@ export abstract class BaseSegment implements ISegment {
 		}
 		if (this.attribution) {
 			leafSegment.attribution = this.attribution.splitAt(pos);
+		}
+
+		if (this.movedRangeExpansion !== undefined) {
+			leafSegment.movedRangeExpansion = this.movedRangeExpansion | RangeExpansion.Near;
+			this.movedRangeExpansion |= RangeExpansion.Far;
 		}
 
 		return leafSegment;
