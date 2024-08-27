@@ -28,7 +28,6 @@ import {
 } from "./referencePositions.js";
 import { SegmentGroupCollection } from "./segmentGroupCollection.js";
 import { PropertiesManager, PropertiesRollback } from "./segmentPropertiesManager.js";
-import { Side } from "./sequencePlace.js";
 
 /**
  * Common properties for a node in a merge tree.
@@ -106,6 +105,16 @@ export enum RangeExpansion {
 }
 
 /**
+ * Tracks information about each concurrent move operation which affected a segment.
+ */
+export interface IConcurrentMoveInfo {
+	clientId: number;
+	seq: number;
+	refSeq: number;
+	expansion: RangeExpansion;
+}
+
+/**
  * Tracks information about when and where this segment was moved to.
  *
  * Note that merge-tree does not currently support moving and only supports
@@ -126,20 +135,7 @@ export interface IMoveInfo {
 	 */
 	movedSeq: number;
 
-	/**
-	 * Directions in which this move grows. If the segment is moved multiple times, this field reflects the union of moved ranges.
-	 */
-	movedRangeExpansion: RangeExpansion;
-
-	/**
-	 * All seqs at which this segment was moved. In the case of overlapping,
-	 * concurrent moves this array will contain multiple seqs.
-	 *
-	 * The seq at  `movedSeqs[i]` corresponds to the client id at `movedClientIds[i]`.
-	 *
-	 * The first element corresponds to the seq of the first move
-	 */
-	movedSeqs: number[];
+	concurrentMoves: IConcurrentMoveInfo[];
 
 	/**
 	 * A reference to the inserted destination segment corresponding to this
@@ -150,15 +146,6 @@ export interface IMoveInfo {
 	 * Currently this field is unused, as we only support obliterate operations
 	 */
 	moveDst?: ReferencePosition;
-
-	/**
-	 * List of client IDs that have moved this segment.
-	 *
-	 * The client that actually moved the segment (i.e. whose move op was sequenced
-	 * first) is stored as the first client in this list. Other clients in the
-	 * list have all issued concurrent ops to move the segment.
-	 */
-	movedClientIds: number[];
 
 	/**
 	 * If this segment was inserted into a concurrently moved range and
@@ -178,13 +165,12 @@ export interface IMoveInfo {
 }
 
 export function toMoveInfo(maybe: Partial<IMoveInfo> | undefined): IMoveInfo | undefined {
-	if (maybe?.movedClientIds !== undefined && maybe?.movedSeq !== undefined) {
+	if (maybe?.concurrentMoves !== undefined) {
 		return maybe as IMoveInfo;
 	}
 	assert(
-		maybe?.movedClientIds === undefined &&
-			maybe?.movedSeq === undefined &&
-			maybe?.movedSeqs === undefined &&
+		maybe?.concurrentMoves === undefined &&
+			// maybe?.movedSeq === undefined &&
 			maybe?.wasMovedOnInsert === undefined,
 		0x86d /* movedClientIds, movedSeq, wasMovedOnInsert, and movedSeqs should all be either set or not set */,
 	);
@@ -270,14 +256,6 @@ export interface ISegment extends IMergeNodeCommon, Partial<IRemovalInfo>, Parti
 	 * Properties that have been added to this segment via annotation.
 	 */
 	properties?: PropertySet;
-	/**
-	 * Stores side information passed to obliterate for the start of a range.
-	 */
-	startSide?: Side.Before | Side.After;
-	/**
-	 * Stores side information passed to obliterate for the end of a range.
-	 */
-	endSide?: Side.Before | Side.After;
 
 	/**
 	 * Add properties to this segment via annotation.
@@ -517,8 +495,7 @@ export abstract class BaseSegment implements ISegment {
 	public removedSeq?: number;
 	public removedClientIds?: number[];
 	public movedSeq?: number;
-	public movedSeqs?: number[];
-	public movedClientIds?: number[];
+	public concurrentMoves?: IConcurrentMoveInfo[];
 	public wasMovedOnInsert?: boolean | undefined;
 	public movedRangeExpansion?: RangeExpansion | undefined;
 	public index: number = 0;
@@ -573,9 +550,8 @@ export abstract class BaseSegment implements ISegment {
 		b.removedClientIds = this.removedClientIds?.slice();
 		// TODO: copy removed client overlap and branch removal info
 		b.removedSeq = this.removedSeq;
-		b.movedClientIds = this.movedClientIds?.slice();
+		b.concurrentMoves = this.concurrentMoves?.slice();
 		b.movedSeq = this.movedSeq;
-		b.movedSeqs = this.movedSeqs;
 		b.wasMovedOnInsert = this.wasMovedOnInsert;
 		b.seq = this.seq;
 		b.attribution = this.attribution?.clone();
@@ -636,9 +612,13 @@ export abstract class BaseSegment implements ISegment {
 				const moveInfo: IMoveInfo | undefined = toMoveInfo(this);
 				assert(moveInfo !== undefined, 0x86e /* On obliterate ack, missing move info! */);
 				this.localMovedSeq = undefined;
-				const seqIdx = moveInfo.movedSeqs.indexOf(UnassignedSequenceNumber);
-				assert(seqIdx !== -1, 0x86f /* expected movedSeqs to contain unacked seq */);
-				moveInfo.movedSeqs[seqIdx] = opArgs.sequencedMessage!.sequenceNumber;
+				const seqIdx = moveInfo.concurrentMoves.findIndex(
+					({ seq }) => seq === UnassignedSequenceNumber,
+				);
+				// IConcurrentMoveInfo objects are shared between segments, so we may have already updated the sequence number
+				if (seqIdx !== -1) {
+					moveInfo.concurrentMoves[seqIdx]!.seq = opArgs.sequencedMessage!.sequenceNumber;
+				}
 
 				if (moveInfo.movedSeq === UnassignedSequenceNumber) {
 					moveInfo.movedSeq = opArgs.sequencedMessage!.sequenceNumber;
@@ -684,9 +664,12 @@ export abstract class BaseSegment implements ISegment {
 		leafSegment.seq = this.seq;
 		leafSegment.localSeq = this.localSeq;
 		leafSegment.clientId = this.clientId;
-		leafSegment.movedClientIds = this.movedClientIds?.slice();
+		leafSegment.concurrentMoves = this.concurrentMoves?.map((move) => ({
+			...move,
+			// eslint-disable-next-line no-bitwise
+			expansion: move.expansion | RangeExpansion.Near,
+		}));
 		leafSegment.movedSeq = this.movedSeq;
-		leafSegment.movedSeqs = this.movedSeqs?.slice();
 		leafSegment.localMovedSeq = this.localMovedSeq;
 		leafSegment.wasMovedOnInsert = this.wasMovedOnInsert;
 		this.segmentGroups.copyTo(leafSegment);
@@ -699,8 +682,11 @@ export abstract class BaseSegment implements ISegment {
 		}
 
 		if (this.movedRangeExpansion !== undefined) {
-			leafSegment.movedRangeExpansion = this.movedRangeExpansion | RangeExpansion.Near;
-			this.movedRangeExpansion |= RangeExpansion.Far;
+			this.concurrentMoves = this.concurrentMoves?.map((move) => ({
+				...move,
+				// eslint-disable-next-line no-bitwise
+				expansion: move.expansion | RangeExpansion.Far,
+			}));
 		}
 
 		return leafSegment;
@@ -857,6 +843,7 @@ export class Marker extends BaseSegment implements ReferencePosition, ISegment {
  */
 export class CollaborationWindow {
 	clientId = LocalClientId;
+	longClientId: string = "";
 	collaborating = false;
 
 	/**
@@ -935,6 +922,7 @@ export class CollaborationWindow {
 
 	loadFrom(a: CollaborationWindow): void {
 		this.clientId = a.clientId;
+		this.longClientId = a.longClientId;
 		this.collaborating = a.collaborating;
 		this.minSeq = a.minSeq;
 		this.currentSeq = a.currentSeq;

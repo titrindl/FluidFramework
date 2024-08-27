@@ -64,6 +64,7 @@ import {
 	seqLTE,
 	toMoveInfo,
 	toRemovalInfo,
+	type IConcurrentMoveInfo,
 } from "./mergeTreeNodes.js";
 import type { TrackingGroup } from "./mergeTreeTracking.js";
 import {
@@ -93,10 +94,11 @@ import { zamboniSegments } from "./zamboni.js";
 
 function markSegmentMoved(seg: ISegment, moveInfo: IMoveInfo): void {
 	seg.moveDst = moveInfo.moveDst;
-	seg.movedClientIds = [...moveInfo.movedClientIds];
-	seg.movedSeqs = [moveInfo.movedSeq];
+	// seg.movedClientIds = [...moveInfo.movedClientIds];
+	// seg.movedSeqs = [moveInfo.movedSeq];
 	seg.movedSeq = moveInfo.movedSeq;
-	seg.movedRangeExpansion = moveInfo.movedRangeExpansion;
+	// seg.movedRangeExpansion = moveInfo.movedRangeExpansion;
+	seg.concurrentMoves = [...moveInfo.concurrentMoves];
 	seg.localMovedSeq = moveInfo.localMovedSeq;
 	seg.wasMovedOnInsert = moveInfo.wasMovedOnInsert;
 }
@@ -132,6 +134,61 @@ function nodeTotalLength(mergeTree: MergeTree, node: IMergeNode): number | undef
 		return node.cachedLength;
 	}
 	return mergeTree.localNetLength(node);
+}
+
+function mergeMoveInfo(
+	refSeq: number,
+	clientId: number,
+	moveInfoNear: IMoveInfo | undefined,
+	moveInfoFar: IMoveInfo | undefined,
+): IMoveInfo | undefined {
+	const spanningMoveSeqs: number[] = [];
+	const concurrentMoves: IConcurrentMoveInfo[] = [
+		...(moveInfoNear?.concurrentMoves ?? []).filter(
+			(move) => (move.expansion & RangeExpansion.Far) !== 0,
+		),
+		...(moveInfoFar?.concurrentMoves ?? []).filter(
+			(move) => (move.expansion & RangeExpansion.Near) !== 0,
+		),
+	]
+		// sort by seq, local moves at the end
+		.sort((a, b) => (a.seq === UnassignedSequenceNumber ? 1 : a.seq - b.seq))
+		// remove duplicates and seqs before refSeq
+		.filter(({ seq, clientId: moveClientId }, index, self) => {
+			if (
+				(seq === UnassignedSequenceNumber && clientId === moveClientId) ||
+				(seq !== UnassignedSequenceNumber && seq <= refSeq)
+			) {
+				// the insertion was aware of this obliteration, so it is not considered concurrent.
+				return false;
+			}
+			if (self.findIndex((move) => move.seq === seq) === index) {
+				// This is the first instance of this seq in the array. Keep it.
+				return true;
+			}
+			// This is the second IConcurrentMoveInfo describing a move which spanned both near and far neighbors.
+			spanningMoveSeqs.push(seq);
+			return false;
+		})
+		// update range expansion. If the move affected both near and far neighbors, the merged move should have RangeExpansion.Both
+		.map((move) =>
+			spanningMoveSeqs.includes(move.seq) ? { ...move, expansion: RangeExpansion.Both } : move,
+		);
+	if (concurrentMoves.length > 0) {
+		const movedSeq = concurrentMoves[0]!.seq;
+		return {
+			concurrentMoves,
+			movedSeq,
+			localMovedSeq:
+				movedSeq === UnassignedSequenceNumber
+					? // TODO: check range expansions, there may be two different localMovedSeqs
+						moveInfoNear?.localMovedSeq ?? moveInfoFar?.localMovedSeq
+					: undefined,
+			wasMovedOnInsert: movedSeq !== UnassignedSequenceNumber,
+		};
+	}
+
+	return undefined;
 }
 
 const LRUSegmentComparer: IComparer<LRUSegment> = {
@@ -499,7 +556,9 @@ export class MergeTree {
 			if (removalInfo !== undefined || moveInfo !== undefined) {
 				if (
 					(!!removalInfo && seqLTE(removalInfo.removedSeq, this.collabWindow.minSeq)) ||
-					(!!moveInfo && seqLTE(moveInfo.movedSeq, this.collabWindow.minSeq))
+					(!!moveInfo &&
+						moveInfo.movedSeq !== undefined &&
+						seqLTE(moveInfo.movedSeq, this.collabWindow.minSeq))
 				) {
 					// this segment removed and outside the collab window which means it is zamboni eligible
 					// this also means the segment could not exist, so we should not consider it
@@ -509,7 +568,7 @@ export class MergeTree {
 				if (
 					refSeq === undefined ||
 					(!!removalInfo && seqLTE(removalInfo.removedSeq, refSeq)) ||
-					(!!moveInfo && seqLTE(moveInfo.movedSeq, refSeq))
+					(!!moveInfo && moveInfo.movedSeq !== undefined && seqLTE(moveInfo.movedSeq, refSeq))
 				) {
 					// this segment is removed or moved and the removal/move is before the refSeq
 					return 0;
@@ -625,8 +684,14 @@ export class MergeTree {
 	}
 
 	// For now assume min starts at zero
-	public startCollaboration(localClientId: number, minSeq: number, currentSeq: number): void {
+	public startCollaboration(
+		localClientId: number,
+		minSeq: number,
+		currentSeq: number,
+		longClientId?: string,
+	): void {
 		this.collabWindow.clientId = localClientId;
+		this.collabWindow.longClientId = longClientId ?? "";
 		this.collabWindow.minSeq = minSeq;
 		this.collabWindow.collaborating = true;
 		this.collabWindow.currentSeq = currentSeq;
@@ -997,13 +1062,13 @@ export class MergeTree {
 					}
 				}
 
-				if (moveInfo !== undefined) {
+				if (moveInfo?.movedSeq !== undefined) {
 					if (seqLTE(moveInfo.movedSeq, this.collabWindow.minSeq)) {
 						return undefined;
 					}
 					if (
 						seqLTE(moveInfo.movedSeq, refSeq) ||
-						moveInfo.movedClientIds.includes(clientId)
+						moveInfo.concurrentMoves.some((move) => move.clientId === clientId)
 					) {
 						return 0;
 					}
@@ -1336,11 +1401,10 @@ export class MergeTree {
 		seq: number,
 		opArgs: IMergeTreeDeltaOpArgs | undefined,
 	): void {
-		this.ensureIntervalBoundary(pos, refSeq, clientId);
-
 		const localSeq =
 			seq === UnassignedSequenceNumber ? ++this.collabWindow.localSeq : undefined;
 
+		this.ensureIntervalBoundary(pos, refSeq, clientId, localSeq);
 		this.blockInsert(pos, refSeq, clientId, seq, localSeq, segments);
 
 		// opArgs == undefined => loading snapshot or test code
@@ -1496,11 +1560,20 @@ export class MergeTree {
 					}
 				}
 
-				const splitNode = this.insertingWalk(this.root, insertPos, refSeq, clientId, seq, {
-					leaf: onLeaf,
-					candidateSegment: newSegment,
-					continuePredicate: continueFrom,
-				});
+				const splitNode = this.insertingWalk(
+					this.root,
+					insertPos,
+					refSeq,
+					clientId,
+					seq,
+					{
+						leaf: onLeaf,
+						candidateSegment: newSegment,
+						continuePredicate: continueFrom,
+					},
+					true,
+					localSeq,
+				);
 
 				if (newSegment.parent === undefined) {
 					// Indicates an attempt to insert past the end of the merge-tree's content.
@@ -1535,67 +1608,18 @@ export class MergeTree {
 					continue;
 				}
 
-				if (
-					// _localMovedSeq !== undefined || _movedSeq !== undefined
-					(prevSegment !== undefined &&
-						((prevSegment.movedRangeExpansion ?? 0) & RangeExpansion.Far) !== 0) ||
-					(nextSegment !== undefined &&
-						((nextSegment.movedRangeExpansion ?? 0) & RangeExpansion.Near) !== 0)
-				) {
-					const movedClientIds = [
-						...(prevSegment?.movedClientIds !== undefined &&
-						((prevSegment.movedRangeExpansion ?? 0) & RangeExpansion.Far) !== 0
-							? prevSegment.movedClientIds
-							: []),
-						...(nextSegment?.movedClientIds !== undefined &&
-						((nextSegment.movedRangeExpansion ?? 0) & RangeExpansion.Near) !== 0
-							? nextSegment.movedClientIds
-							: []),
-					];
-					const movedSeqs = [
-						...(prevSegment?.movedSeqs !== undefined &&
-						((prevSegment.movedRangeExpansion ?? 0) & RangeExpansion.Far) !== 0
-							? prevSegment.movedSeqs
-							: []),
-						...(nextSegment?.movedSeqs !== undefined &&
-						((nextSegment.movedRangeExpansion ?? 0) & RangeExpansion.Near) !== 0
-							? nextSegment.movedSeqs
-							: []),
-					];
-					const movedSeq = Math.min(
-						prevSegment !== undefined &&
-							((prevSegment.movedRangeExpansion ?? 0) & RangeExpansion.Far) !== 0
-							? prevSegment.movedSeq ?? UnassignedSequenceNumber
-							: Number.POSITIVE_INFINITY,
-						nextSegment !== undefined &&
-							((nextSegment.movedRangeExpansion ?? 0) & RangeExpansion.Near) !== 0
-							? nextSegment.movedSeq ?? UnassignedSequenceNumber
-							: Number.POSITIVE_INFINITY,
-					);
-					const localMovedSeq =
-						(prevSegment !== undefined &&
-						((prevSegment.movedRangeExpansion ?? 0) & RangeExpansion.Far) !== 0
-							? prevSegment.localMovedSeq
-							: undefined) ??
-						(nextSegment !== undefined &&
-						((nextSegment.movedRangeExpansion ?? 0) & RangeExpansion.Near) !== 0
-							? nextSegment.localMovedSeq
-							: undefined);
-					const movedRangeExpansion =
-						// The far bit of the previous segment
-						((prevSegment?.movedRangeExpansion ?? RangeExpansion.None) & RangeExpansion.Far) |
-						// The near bit of the next segment
-						((nextSegment?.movedRangeExpansion ?? RangeExpansion.None) & RangeExpansion.Near);
-					const moveInfo: IMoveInfo = {
-						movedClientIds,
-						movedSeq,
-						movedRangeExpansion,
-						movedSeqs,
-						localMovedSeq,
-						wasMovedOnInsert: (movedSeq ?? -1) !== UnassignedSequenceNumber,
-					};
+				// TODO: overlapping concurrent obliterations are not handled
+				// Multiple obliterations could affect the same segments but have different endpoint expansion behavior.
+				// If the first obliterate which gets sequenced doesn't have endpoint expansion, but the second one does,
+				// concurrently inserted segments at that endpoint should be included in the later obliterate.
 
+				const prevMoveInfo = toMoveInfo(prevSegment);
+				const nextMoveInfo = toMoveInfo(nextSegment);
+
+				const moveInfo = mergeMoveInfo(refSeq, clientId, prevMoveInfo, nextMoveInfo);
+				if (moveInfo) {
 					markSegmentMoved(newSegment, moveInfo);
+					this.blockUpdatePathLengths(newSegment.parent, seq, clientId);
 
 					if (moveInfo.localMovedSeq !== undefined) {
 						const movedSegmentGroup = this.locallyMovedSegments.get(moveInfo.localMovedSeq);
@@ -1606,10 +1630,6 @@ export class MergeTree {
 						);
 
 						this.addToPendingList(newSegment, movedSegmentGroup, localSeq);
-					}
-
-					if (newSegment.parent) {
-						this.blockUpdatePathLengths(newSegment.parent, seq, clientId);
 					}
 				}
 			}
@@ -1868,11 +1888,11 @@ export class MergeTree {
 		opArgs: IMergeTreeDeltaOpArgs,
 		rollback: PropertiesRollback = PropertiesRollback.None,
 	): void {
-		this.ensureIntervalBoundary(start, refSeq, clientId);
-		this.ensureIntervalBoundary(end, refSeq, clientId);
-		const deltaSegments: IMergeTreeSegmentDelta[] = [];
 		const localSeq =
 			seq === UnassignedSequenceNumber ? ++this.collabWindow.localSeq : undefined;
+		this.ensureIntervalBoundary(start, refSeq, clientId, localSeq);
+		this.ensureIntervalBoundary(end, refSeq, clientId, localSeq);
+		const deltaSegments: IMergeTreeSegmentDelta[] = [];
 		// eslint-disable-next-line import/no-deprecated
 		let segmentGroup: SegmentGroup | undefined;
 		const annotateSegment = (segment: ISegment): boolean => {
@@ -1908,7 +1928,16 @@ export class MergeTree {
 			return true;
 		};
 
-		this.nodeMap(refSeq, clientId, annotateSegment, undefined, undefined, start, end);
+		this.nodeMap(
+			refSeq,
+			clientId,
+			annotateSegment,
+			undefined,
+			undefined,
+			start,
+			end,
+			localSeq,
+		);
 
 		// OpArgs == undefined => test code
 		if (deltaSegments.length > 0) {
@@ -1967,51 +1996,61 @@ export class MergeTree {
 			_end: number,
 		): boolean => {
 			const existingMoveInfo = toMoveInfo(segment);
-			segment.movedRangeExpansion = segment.movedRangeExpansion ?? RangeExpansion.None;
+			const existingRemovalInfo = toRemovalInfo(segment);
+			let expansion = RangeExpansion.None;
 			// interior segment, or first segment and range has an exclusive start
 			if (pos !== startPos || startPlace.side === Side.After) {
-				segment.movedRangeExpansion |= RangeExpansion.Near;
+				expansion |= RangeExpansion.Near;
 			}
 			if (pos + segment.cachedLength !== endPos || endPlace.side === Side.Before) {
-				segment.movedRangeExpansion |= RangeExpansion.Far;
+				expansion |= RangeExpansion.Far;
 			}
 
-			if (
+			segment.wasMovedOnInsert =
 				clientId !== segment.clientId &&
 				segment.seq !== undefined &&
 				seq !== UnassignedSequenceNumber &&
-				(refSeq < segment.seq || segment.seq === UnassignedSequenceNumber)
-			) {
-				segment.wasMovedOnInsert = true;
-			}
+				segment.seq === UnassignedSequenceNumber;
 
 			if (existingMoveInfo === undefined) {
-				segment.movedClientIds = [clientId];
+				segment.concurrentMoves = [{ clientId, seq, expansion, refSeq }];
+				// if (
+				// 	existingRemovalInfo === undefined ||
+				// 	(existingRemovalInfo.removedSeq === UnassignedSequenceNumber &&
+				// 		seq !== UnassignedSequenceNumber)
+				// ) {
 				segment.movedSeq = seq;
 				segment.localMovedSeq = localSeq;
-				segment.movedSeqs = [seq];
+				// }
 
-				if (!toRemovalInfo(segment)) {
+				if (!existingRemovalInfo) {
 					movedSegments.push({ segment });
 				}
 			} else {
 				_overwrite = true;
 				if (existingMoveInfo.movedSeq === UnassignedSequenceNumber) {
-					// we moved this locally, but someone else moved it first
-					// so put them at the head of the list
-					// The list isn't ordered, but we keep the first move at the head
-					// for partialLengths bookkeeping purposes
-					existingMoveInfo.movedClientIds.unshift(clientId);
+					// TODO: TT I think this is incorrect. Two local obliterates can affect the same segment.
+					if (seq !== UnassignedSequenceNumber) {
+						existingMoveInfo.concurrentMoves.unshift({ clientId, seq, expansion, refSeq });
+						// we moved this locally, but someone else moved it first
+						// so put them at the head of the list
+						// The list isn't ordered, but we keep the first move at the head
+						// for partialLengths bookkeeping purposes
+					}
 
+					// if (
+					// 	existingRemovalInfo === undefined ||
+					// 	(existingRemovalInfo.removedSeq === UnassignedSequenceNumber &&
+					// 		seq !== UnassignedSequenceNumber)
+					// ) {
 					existingMoveInfo.movedSeq = seq;
-					existingMoveInfo.movedSeqs.unshift(seq);
+					// }
 					if (segment.localRefs?.empty === false) {
 						localOverlapWithRefs.push(segment);
 					}
 				} else {
 					// Do not replace earlier sequence number for move
-					existingMoveInfo.movedClientIds.push(clientId);
-					existingMoveInfo.movedSeqs.push(seq);
+					existingMoveInfo.concurrentMoves.push({ clientId, seq, expansion, refSeq });
 				}
 			}
 
@@ -2059,6 +2098,9 @@ export class MergeTree {
 			// then we should include concurrently inserted segments between the last element of the range and the exclusive end sibling.
 			// These have length 0 at refSeq but non-zero at visibleSeq.
 			endPlace.side === Side.Before,
+			// Do not skip zero length segments.
+			// Everything in the range must be marked as moved so that the range expands to concurrently inserted segments correctly.
+			false,
 		);
 
 		this.slideAckedRemovedSegmentReferences(localOverlapWithRefs);
@@ -2171,7 +2213,16 @@ export class MergeTree {
 			}
 			return true;
 		};
-		this.nodeMap(refSeq, clientId, markRemoved, undefined, afterMarkRemoved, start, end);
+		this.nodeMap(
+			refSeq,
+			clientId,
+			markRemoved,
+			undefined,
+			afterMarkRemoved,
+			start,
+			end,
+			localSeq,
+		);
 		// these segments are already viewed as being removed locally and are not event-ed
 		// so can slide non-StayOnRemove refs immediately
 		this.slideAckedRemovedSegmentReferences(localOverlapWithRefs);
@@ -2694,6 +2745,9 @@ export class MergeTree {
 	 * @param includeConcurrentSegmentsAtEnd - If true, include segments of length 0 at refSeq
 	 * but non-zero at visibilitySeq at the end of the mapped range.
 	 * Only applies if {@link visibilitySeq} is different from {@link refSeq}.
+	 *
+	 * @param skipZeroLengthSegments - If false, all segments within the bounds of the range will be visited,
+	 * even if their length is 0 at visibilitySeq.
 	 */
 	private nodeMap<TClientData>(
 		refSeq: number,
@@ -2706,6 +2760,7 @@ export class MergeTree {
 		localSeq?: number,
 		visibilitySeq: number = refSeq,
 		includeConcurrentSegmentsAtEnd: boolean = false,
+		skipZeroLengthSegments: boolean = true,
 	): void {
 		const endPos = end ?? this.nodeLength(this.root, refSeq, clientId, localSeq) ?? 0;
 		if (endPos === start) {
@@ -2736,8 +2791,9 @@ export class MergeTree {
 					return node.isLeaf() ? NodeAction.Exit : NodeAction.Continue;
 				}
 				if (
-					(len === undefined && lenAtRefSeq === 0) ||
-					(len === 0 && !isUnackedAndInObliterate && lenAtRefSeq === 0)
+					skipZeroLengthSegments &&
+					((len === undefined && lenAtRefSeq === 0) ||
+						(len === 0 && !isUnackedAndInObliterate && lenAtRefSeq === 0))
 				) {
 					return NodeAction.Skip;
 				}

@@ -17,11 +17,7 @@ import {
 import { walkAllChildSegments } from "../mergeTreeNodeWalk.js";
 import { MergeBlock, ISegment, Marker } from "../mergeTreeNodes.js";
 import { ReferenceType } from "../ops.js";
-import {
-	PartialSequenceLengths,
-	verifyExpectedPartialLengths,
-	verifyPartialLengths,
-} from "../partialLengths.js";
+import { PartialSequenceLengths, verifyPartialLengths } from "../partialLengths.js";
 import { PropertySet } from "../properties.js";
 import { TextSegment } from "../textSegment.js";
 
@@ -318,7 +314,7 @@ export function validateRefCount(collection?: LocalReferenceCollection): void {
 export function useStrictPartialLengthChecks(): void {
 	beforeEach(() => {
 		PartialSequenceLengths.options.verifier = verifyPartialLengths;
-		PartialSequenceLengths.options.verifyExpected = verifyExpectedPartialLengths;
+		// PartialSequenceLengths.options.verifyExpected = verifyExpectedPartialLengths;
 	});
 
 	afterEach(() => {

@@ -8,12 +8,12 @@ import { strict as assert } from "node:assert";
 import { LoggingError } from "@fluidframework/telemetry-utils/internal";
 
 import { MergeTree } from "../mergeTree.js";
+import { walkAllChildSegments } from "../mergeTreeNodeWalk.js";
+import { Side } from "../sequencePlace.js";
+import { TextSegment } from "../textSegment.js";
 
 import { ReconnectTestHelper } from "./reconnectHelper.js";
 import { useStrictPartialLengthChecks } from "./testUtils.js";
-import { Side } from "../sequencePlace.js";
-import { walkAllChildSegments } from "../mergeTreeNodeWalk.js";
-import { TextSegment } from "../textSegment.js";
 
 /**
  * Some tests contain ASCII diagrams of the trees to make it easier to reason about
@@ -64,13 +64,13 @@ for (const incremental of [true, false]) {
 			// I-[J]-(KLM-[ABC]-D-123456-E-[FG]-H)
 
 			helper.insertText("A", 0, "ABCDEFGH");
-			helper.processAllOps();
-			helper.removeRange("C", 0, 3); // "DEFGH"
+			helper.processAllOps(); // all clients: ABCDEFGH
+			helper.removeRange("C", 0, 3); // "___DEFGH"
 			helper.insertText("C", 1, "123456"); // "D123456EFGH"
-			helper.removeRange("A", 5, 7); // "ABCDEH"
-			helper.insertText("A", 0, "IJKLM"); // "IJKLMABCDEH"
-			helper.obliterateRange("A", 2, 11); // "IJ[KLMABCDE)H"
-			helper.removeRange("A", 1, 2); // "I_[KLMABCDE)H"
+			helper.removeRange("A", 5, 7); // "ABCDE__H"
+			helper.insertText("A", 0, "IJKLM"); // "IJKLMABCDE__H"
+			helper.obliterateRange("A", 2, 11); // "IJ[KLMABCDEH)"
+			helper.removeRange("A", 1, 2); // "I_[KLMABCDEH)"
 			helper.processAllOps();
 
 			assert.equal(helper.clients.A.getText(), "I");
@@ -178,12 +178,12 @@ for (const incremental of [true, false]) {
 		it("does not delete remote insert when between local insert+obliterate", () => {
 			const helper = new ReconnectTestHelper();
 
-			helper.insertText("C", 0, "A");
-			helper.obliterateRange("C", 0, 1);
-			helper.insertText("B", 0, "B");
-			helper.insertText("C", 0, "X");
-			helper.obliterateRange("B", 0, 1);
-			helper.processAllOps();
+			helper.insertText("C", 0, "A"); // A
+			helper.obliterateRange("C", 0, 1); // [A)
+			helper.insertText("B", 0, "B"); // B
+			helper.insertText("C", 0, "X"); // X[A)
+			helper.obliterateRange("B", 0, 1); // [B)
+			helper.processAllOps(); // X[B[A))
 
 			assert.equal(helper.clients.A.getText(), "X");
 			assert.equal(helper.clients.B.getText(), "X");
@@ -269,13 +269,13 @@ for (const incremental of [true, false]) {
 			const helper = new ReconnectTestHelper();
 
 			helper.insertText("A", 0, "1");
-			helper.insertText("A", 0, "2");
+			helper.insertText("A", 0, "2"); // 21
 			helper.insertText("C", 0, "XXXX");
 			helper.insertText("B", 0, "ABC");
-			helper.insertText("C", 0, "GGG");
-			helper.obliterateRange("C", 2, 6);
-			helper.insertText("C", 1, "D");
-			helper.processAllOps();
+			helper.insertText("C", 0, "GGG"); // GGGXXXX
+			helper.obliterateRange("C", 2, 6); // GG[GXXX)X
+			helper.insertText("C", 1, "D"); // GDG[GXXX)X
+			helper.processAllOps(); // GDG[GABCXXX)X21
 
 			assert.equal(helper.clients.A.getText(), "GDGX21");
 			assert.equal(helper.clients.C.getText(), "GDGX21");
@@ -351,11 +351,11 @@ for (const incremental of [true, false]) {
 			helper.insertText("C", 0, "123");
 			helper.insertText("C", 0, "4567");
 			helper.insertText("B", 0, "89");
-			helper.processAllOps();
-			helper.obliterateRange("C", 1, 7);
-			helper.insertText("A", 3, "w");
-			helper.insertText("C", 3, "Y");
-			helper.processAllOps();
+			helper.processAllOps(); // 894567123X
+			helper.obliterateRange("C", 1, 7); // 8[945671)23X
+			helper.insertText("A", 3, "w"); // 894w567123X
+			helper.insertText("C", 3, "Y"); // 8[945671)23YX
+			helper.processAllOps(); // 8[94wY5671)23YX
 
 			assert.equal(helper.clients.A.getText(), "823YX");
 			assert.equal(helper.clients.B.getText(), "823YX");
@@ -487,12 +487,12 @@ for (const incremental of [true, false]) {
 			helper.insertText("A", 0, "C");
 			helper.insertText("A", 0, "D");
 			helper.insertText("A", 0, "1234567");
-			helper.processAllOps();
+			helper.processAllOps(); // 1234567DCAB
 			helper.logger.validate();
-			helper.obliterateRange("A", 2, 7);
-			helper.removeRange("A", 2, 5);
-			helper.insertText("C", 3, "X");
-			helper.processAllOps();
+			helper.obliterateRange("A", 2, 7); // 12[34567)DCAB
+			helper.removeRange("A", 2, 5); // 12[...)___B
+			helper.insertText("C", 3, "X"); // 123X4567DCAB
+			helper.processAllOps(); // 12[3X4567)B
 
 			assert.equal(helper.clients.A.getText(), "12B");
 			assert.equal(helper.clients.B.getText(), "12B");
@@ -676,13 +676,13 @@ for (const incremental of [true, false]) {
 
 			helper.insertText("B", 0, "ABC");
 			helper.insertText("A", 0, "DEF");
-			helper.removeRange("A", 1, 2);
-			helper.insertText("B", 0, "123456");
-			helper.obliterateRange("B", 2, 7);
-			helper.insertText("A", 1, "Y");
-			helper.processAllOps();
+			helper.removeRange("A", 1, 2); // D_F
+			helper.insertText("B", 0, "123456"); // 123456ABC
+			helper.obliterateRange("B", 2, 7); // 12[3456A)BC
+			helper.insertText("A", 1, "Y"); // DY_F
+			helper.processAllOps(); // 12[3456DYFA)BC
 			helper.logger.validate();
-			helper.insertText("B", 4, "X");
+			helper.insertText("B", 4, "X"); // 12[3456DYFA)BCX
 			helper.processAllOps();
 
 			assert.equal(helper.clients.A.getText(), "12BCX");
@@ -806,13 +806,13 @@ for (const incremental of [true, false]) {
 			helper.insertText("C", 0, "A");
 			helper.insertText("B", 0, "B");
 			helper.insertText("A", 0, "12345");
-			helper.processAllOps();
+			helper.processAllOps(); // 12345BA
 			helper.logger.validate();
-			helper.obliterateRange("A", 0, 2);
-			helper.insertText("C", 1, "C");
-			helper.obliterateRange("C", 0, 4);
-			helper.insertText("C", 1, "D");
-			helper.processAllOps();
+			helper.obliterateRange("A", 0, 2); // [12)345BA
+			helper.insertText("C", 1, "C"); // 1C2345BA
+			helper.obliterateRange("C", 0, 4); // [1C23)45BA
+			helper.insertText("C", 1, "D"); // [1C23)4D5BA
+			helper.processAllOps(); // [[1C2)3)4D5BA
 			helper.logger.validate();
 		});
 
@@ -951,15 +951,15 @@ for (const incremental of [true, false]) {
 			helper.insertText("B", 0, "AB");
 			helper.processAllOps();
 			helper.logger.validate();
-			helper.obliterateRange("A", 1, 2);
-			helper.obliterateRange("B", 0, 2);
+			helper.obliterateRange("A", 1, 2); // A[B)
+			helper.obliterateRange("B", 0, 2); // [AB)
 			// bug here: for client B, segment B had multiple movedSeqs, and when
 			// traversal went to the right and found a matching movedSeq in the movedSeqs
 			// array, it selected the lowest seq in the array, which differed from
 			// the correct and matching movedSeq
-			helper.insertText("A", 1, "C");
-			helper.insertText("A", 2, "D");
-			helper.processAllOps();
+			helper.insertText("A", 1, "C"); // AC[B)
+			helper.insertText("A", 2, "D"); // ACD[B)
+			helper.processAllOps(); // [ACD[B))
 
 			assert.equal(helper.clients.A.getText(), "");
 			assert.equal(helper.clients.B.getText(), "");
@@ -1025,23 +1025,23 @@ for (const incremental of [true, false]) {
 			// FGHIJ-E-12345-(6-[7-L-8-D]-C)-A-K-B
 
 			helper.insertText("A", 0, "AB");
-			helper.insertText("A", 0, "C");
+			helper.insertText("A", 0, "C"); // CAB
 			helper.insertText("C", 0, "D");
 			helper.insertText("B", 0, "12345678");
-			helper.insertText("B", 0, "E");
-			helper.insertText("C", 0, "FGHIJ");
-			helper.insertText("A", 2, "K");
-			helper.processAllOps();
+			helper.insertText("B", 0, "E"); // E12345678
+			helper.insertText("C", 0, "FGHIJ"); // FGHIJD
+			helper.insertText("A", 2, "K"); // CAKB
+			helper.processAllOps(); // FGHIJE12345678DCAKB
 			helper.logger.validate();
-			helper.removeRange("A", 12, 15);
+			helper.removeRange("A", 12, 15); // FGHIJE123456___CAKB
 			// bug here: when traversing for obliterate, we visit unacked segments
 			// within the range, considering their length 0 but still marking them
 			// obliterated. if the segment was inside a hiernode whose length was
 			// also 0, we would incorrectly skip over the entire hier node, rather
 			// than visiting the children segments
-			helper.obliterateRange("A", 11, 13);
-			helper.insertText("B", 13, "L");
-			helper.processAllOps();
+			helper.obliterateRange("A", 11, 13); // FGHIJE12345[6___C)AKB
+			helper.insertText("B", 13, "L"); // FGHIJE1234567L8DCAKB
+			helper.processAllOps(); // FGHIJE12345[6_L__C)AKB
 
 			assert.equal(helper.clients.A.getText(), "FGHIJE12345AKB");
 			assert.equal(helper.clients.B.getText(), "FGHIJE12345AKB");

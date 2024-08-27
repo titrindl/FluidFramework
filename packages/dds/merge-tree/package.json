@@ -178,9 +178,15 @@
 	"typeValidation": {
 		"broken": {
 			"Interface_IMoveInfo": {
+				"backCompat": false,
 				"forwardCompat": false
 			},
-			"Interface_IMergeTreeObliterateMsg": {}
+
+			"Interface_IMergeTreeObliterateMsg": {},
+
+			"Class_CollaborationWindow": {
+				"forwardCompat": false
+			}
 		}
 	}
 }

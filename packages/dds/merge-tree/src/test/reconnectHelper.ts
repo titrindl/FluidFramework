@@ -134,7 +134,8 @@ export class ReconnectTestHelper {
 	}
 
 	public processAllOps(): void {
-		for (const op of this.ops.splice(0))
+		const processingOps = this.ops.splice(0);
+		for (const op of processingOps)
 			for (const c of this.clients.all) {
 				c.applyMsg(op);
 			}

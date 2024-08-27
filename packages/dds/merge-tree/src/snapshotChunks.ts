@@ -14,6 +14,8 @@ import { IJSONSegment } from "./ops.js";
 import { PropertySet } from "./properties.js";
 import { SnapshotLegacy } from "./snapshotlegacy.js";
 
+import type { RangeExpansion } from "./index.js";
+
 export interface VersionedMergeTreeChunk {
 	version: undefined | "1";
 }
@@ -70,7 +72,12 @@ export interface IJSONSegmentWithMergeInfo {
 	removedSeq?: number;
 	movedClientIds?: string[];
 	movedSeq?: number;
-	movedSeqs?: number[];
+	concurrentMoves?: {
+		seq: number;
+		refSeq: number;
+		clientId: string;
+		expansion: RangeExpansion;
+	}[];
 }
 
 /**

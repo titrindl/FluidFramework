@@ -672,19 +672,22 @@ export class PartialSequenceLengths {
 		// it's not possible to have an overlapping obliterate and remove that are both local
 		// TT: This is incorrect.
 		// An obliteration containing removed segments should still mark the removed segments as obliterated
-		// so that concurrent insertions only need to look ath their immediate neighbors.
+		// so that concurrent insertions only need to look at their immediate neighbors.
 		// assert(
 		// 	(!moveIsLocal && !removalIsLocal) || moveIsLocal !== removalIsLocal,
 		// 	0x870 /* overlapping local obliterate and remove */,
 		// );
 
-		const removeHappenedFirst =
-			removalInfo &&
-			(!moveInfo ||
-				moveIsLocal ||
-				(!removalIsLocal && moveInfo.movedSeq > removalInfo.removedSeq));
+		// TODO: ask Abram...
 
-		if (removeHappenedFirst) {
+		// const removeHappenedFirst =
+		// 	removalInfo &&
+		// 	(!moveInfo ||
+		// 		moveIsLocal ||
+		// 		(!removalIsLocal && moveInfo.movedSeq > removalInfo.removedSeq));
+		const removeHappenedFirst = isRemoveFirst(removalInfo, moveInfo);
+
+		if (!!removalInfo && removeHappenedFirst) {
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 			seqOrLocalSeq = removalIsLocal ? removalInfo.localRemovedSeq! : removalInfo.removedSeq;
 			segmentLen = -segmentLen;
@@ -695,12 +698,12 @@ export class PartialSequenceLengths {
 			clientId = removalInfo.removedClientIds[0]!;
 			const hasOverlap = removalInfo.removedClientIds.length > 1;
 			removeClientOverlap = hasOverlap ? removalInfo.removedClientIds : undefined;
-		} else if (moveInfo) {
+		} else if (!!moveInfo && !removeHappenedFirst) {
 			// The client who performed the move is always stored
 			// in the first position of moveInfo.
-			// TODO Non null asserting, why is this not null?
+			// moveInfo is not undefined, so concurrentMoves must have at least one entry
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-			clientId = moveInfo.movedClientIds[0]!;
+			clientId = moveInfo.concurrentMoves[0]!.clientId;
 
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 			seqOrLocalSeq = moveIsLocal ? moveInfo.localMovedSeq! : moveInfo.movedSeq;
@@ -711,12 +714,18 @@ export class PartialSequenceLengths {
 					0x871 /* wasMovedOnInsert should only be set on acked obliterates */,
 				);
 				segmentLen = 0;
+			} else if ((segment.seq ?? 0) > (moveInfo.concurrentMoves[0]?.refSeq ?? 0)) {
+				// Moving client was not aware of this segment because it was inserted concurrently but sequenced before the move.
+				segmentLen = 0;
+				remoteObliteratedLen = segment.cachedLength;
 			} else {
 				segmentLen = -segmentLen;
 			}
 
-			const hasOverlap = moveInfo.movedClientIds.length > 1;
-			moveClientOverlap = hasOverlap ? moveInfo.movedClientIds : undefined;
+			const hasOverlap = moveInfo.concurrentMoves.length > 1;
+			moveClientOverlap = hasOverlap
+				? moveInfo.concurrentMoves.map(({ clientId: moveClientId }) => moveClientId)
+				: undefined;
 		} else if (segment.wasMovedOnInsert) {
 			// if this segment was obliterated on insert, its length is only
 			// visible to the client that inserted it
@@ -733,13 +742,22 @@ export class PartialSequenceLengths {
 		}
 
 		// overlapping move and remove, remove happened first
-		if (moveInfo && removalInfo && removeHappenedFirst && !moveIsLocal) {
+		if (
+			moveInfo &&
+			removalInfo &&
+			removeHappenedFirst &&
+			!moveIsLocal &&
+			// movedSeq is undefined when the obliterator was already aware of the removal,
+			// or was unaware of the segment's insertion and the segment was removed before the obliteration,
+			// in which case the segment is already length 0
+			moveInfo.movedSeq !== undefined
+		) {
 			// The client who performed the remove is always stored
 			// in the first position of removalInfo.
 			// TODO Non null asserting, why is this not null?
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-			const moveClientId = moveInfo.movedClientIds[0]!;
-			const hasOverlap = moveInfo.movedClientIds.length > 1;
+			const moveClientId = moveInfo.concurrentMoves[0]!.clientId;
+			const hasOverlap = moveInfo.concurrentMoves.length > 1;
 
 			PartialSequenceLengths.updatePartialsAfterInsertion(
 				segment,
@@ -750,7 +768,7 @@ export class PartialSequenceLengths {
 				moveInfo.movedSeq,
 				moveClientId,
 				undefined,
-				hasOverlap ? moveInfo.movedClientIds : undefined,
+				hasOverlap ? moveInfo.concurrentMoves.map(({ clientId: id }) => id) : undefined,
 			);
 		}
 
@@ -948,16 +966,7 @@ export class PartialSequenceLengths {
 				const segment = child;
 				const removalInfo = toRemovalInfo(segment);
 				const moveInfo = toMoveInfo(segment);
-
-				const removalIsLocal =
-					!!removalInfo && removalInfo.removedSeq === UnassignedSequenceNumber;
-				const moveIsLocal = !!moveInfo && moveInfo.movedSeq === UnassignedSequenceNumber;
-
-				const removeHappenedFirst =
-					removalInfo &&
-					(!moveInfo ||
-						moveIsLocal ||
-						(!removalIsLocal && moveInfo.movedSeq > removalInfo.removedSeq));
+				const removeHappenedFirst = isRemoveFirst(removalInfo, moveInfo);
 
 				if (seq === segment.seq) {
 					// if this segment was moved on insert, its length should
@@ -965,7 +974,7 @@ export class PartialSequenceLengths {
 					if (
 						segment.wasMovedOnInsert &&
 						segment.seq !== undefined &&
-						moveInfo &&
+						moveInfo?.movedSeq !== undefined &&
 						moveInfo.movedSeq < segment.seq
 					) {
 						remoteObliteratedLen += segment.cachedLength;
@@ -1535,4 +1544,23 @@ function insertIntoList<T>(list: T[], index: number, elem: T): void {
 	} else {
 		list.push(elem);
 	}
+}
+
+function isRemoveFirst(
+	removalInfo: IRemovalInfo | undefined,
+	moveInfo: IMoveInfo | undefined,
+): boolean {
+	const removalIsLocal = removalInfo?.removedSeq === UnassignedSequenceNumber;
+	const moveIsLocal = moveInfo?.movedSeq === UnassignedSequenceNumber;
+	return (
+		(removalInfo !== undefined &&
+			(moveInfo?.movedSeq === undefined ||
+				(moveIsLocal && !removalIsLocal) ||
+				(!moveIsLocal && !removalIsLocal && moveInfo.movedSeq > removalInfo.removedSeq) ||
+				(moveIsLocal &&
+					removalIsLocal &&
+					// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+					moveInfo.localMovedSeq! > removalInfo.localRemovedSeq!))) ??
+		false
+	);
 }

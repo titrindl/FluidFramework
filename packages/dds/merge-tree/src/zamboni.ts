@@ -154,7 +154,8 @@ function scourNode(node: MergeBlock, holdNodes: IMergeNode[], mergeTree: MergeTr
 			// it can be unlinked (i.e. removed from the merge-tree)
 			if (
 				((!!removalInfo && seqLTE(removalInfo.removedSeq, mergeTree.collabWindow.minSeq)) ||
-					(!!moveInfo && seqLTE(moveInfo.movedSeq, mergeTree.collabWindow.minSeq))) &&
+					(moveInfo?.movedSeq !== undefined &&
+						seqLTE(moveInfo.movedSeq, mergeTree.collabWindow.minSeq))) &&
 				segment.trackingCollection.empty
 			) {
 				mergeTree.mergeTreeMaintenanceCallback?.(
