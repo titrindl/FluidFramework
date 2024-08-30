@@ -135,11 +135,10 @@ export class SnapshotLoader {
 			}
 			if (spec.concurrentMoves !== undefined) {
 				seg.concurrentMoves = spec.concurrentMoves.map(
-					({ seq, clientId: sid, expansion, refSeq }) => ({
+					({ seq, clientId: sid, expansion }) => ({
 						seq,
 						clientId: this.client.getOrAddShortClientId(sid),
 						expansion,
-						refSeq,
 					}),
 				);
 			}

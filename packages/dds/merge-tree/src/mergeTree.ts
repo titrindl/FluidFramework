@@ -2013,7 +2013,7 @@ export class MergeTree {
 				segment.seq === UnassignedSequenceNumber;
 
 			if (existingMoveInfo === undefined) {
-				segment.concurrentMoves = [{ clientId, seq, expansion, refSeq }];
+				segment.concurrentMoves = [{ clientId, seq, expansion }];
 				// if (
 				// 	existingRemovalInfo === undefined ||
 				// 	(existingRemovalInfo.removedSeq === UnassignedSequenceNumber &&
@@ -2031,7 +2031,7 @@ export class MergeTree {
 				if (existingMoveInfo.movedSeq === UnassignedSequenceNumber) {
 					// TODO: TT I think this is incorrect. Two local obliterates can affect the same segment.
 					if (seq !== UnassignedSequenceNumber) {
-						existingMoveInfo.concurrentMoves.unshift({ clientId, seq, expansion, refSeq });
+						existingMoveInfo.concurrentMoves.unshift({ clientId, seq, expansion });
 						// we moved this locally, but someone else moved it first
 						// so put them at the head of the list
 						// The list isn't ordered, but we keep the first move at the head
@@ -2050,7 +2050,7 @@ export class MergeTree {
 					}
 				} else {
 					// Do not replace earlier sequence number for move
-					existingMoveInfo.concurrentMoves.push({ clientId, seq, expansion, refSeq });
+					existingMoveInfo.concurrentMoves.push({ clientId, seq, expansion });
 				}
 			}
 

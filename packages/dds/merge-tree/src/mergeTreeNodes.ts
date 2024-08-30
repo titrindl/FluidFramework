@@ -110,7 +110,6 @@ export enum RangeExpansion {
 export interface IConcurrentMoveInfo {
 	clientId: number;
 	seq: number;
-	refSeq: number;
 	expansion: RangeExpansion;
 }
 

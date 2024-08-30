@@ -19,6 +19,7 @@ import {
 	seqLTE,
 	toMoveInfo,
 	toRemovalInfo,
+	type IConcurrentMoveInfo,
 	type MergeBlock,
 } from "./mergeTreeNodes.js";
 // eslint-disable-next-line import/no-deprecated
@@ -403,11 +404,12 @@ export class PartialSequenceLengths {
 			if (child.isLeaf()) {
 				// Leaf segment
 				const segment = child;
+
 				if (segment.seq !== undefined && seqLTE(segment.seq, collabWindow.minSeq)) {
+					// segment was inserted before minSeq.
 					combinedPartialLengths.minLength += segment.cachedLength;
-				} else {
-					PartialSequenceLengths.insertSegment(combinedPartialLengths, segment);
 				}
+
 				const removalInfo = toRemovalInfo(segment);
 				const moveInfo = toMoveInfo(segment);
 				if (
@@ -415,15 +417,15 @@ export class PartialSequenceLengths {
 						seqLTE(removalInfo.removedSeq, collabWindow.minSeq)) ||
 					(moveInfo?.movedSeq !== undefined && seqLTE(moveInfo.movedSeq, collabWindow.minSeq))
 				) {
+					// segment was deleted before minSeq.
 					combinedPartialLengths.minLength -= segment.cachedLength;
-				} else if (removalInfo !== undefined || moveInfo !== undefined) {
-					PartialSequenceLengths.insertSegment(
-						combinedPartialLengths,
-						segment,
-						removalInfo,
-						moveInfo,
-					);
 				}
+
+				PartialSequenceLengths.addSequencePartials(
+					combinedPartialLengths,
+					segment,
+					collabWindow,
+				);
 			}
 		}
 		// Post-process correctly-ordered partials computing sums and creating
@@ -485,11 +487,11 @@ export class PartialSequenceLengths {
 
 	private static accumulateMoveClientOverlap(
 		partialLength: PartialSequenceLength,
-		overlapMoveClientIds: number[],
+		concurrentMoves: IConcurrentMoveInfo[],
 		seglen: number,
 	): void {
 		if (partialLength.overlapObliterateClients) {
-			for (const clientId of overlapMoveClientIds) {
+			for (const { clientId } of concurrentMoves) {
 				const overlapClientNode = partialLength.overlapObliterateClients.get(clientId);
 				if (overlapClientNode) {
 					overlapClientNode.data.seglen += seglen;
@@ -499,7 +501,7 @@ export class PartialSequenceLengths {
 			}
 		} else {
 			partialLength.overlapObliterateClients = PartialSequenceLengths.getOverlapClients(
-				overlapMoveClientIds,
+				concurrentMoves.map(({ clientId }) => clientId),
 				seglen,
 			);
 		}
@@ -512,15 +514,17 @@ export class PartialSequenceLengths {
 	 * @param segmentLen - Length of segment with overlapping moves
 	 * @param segment - Segment with overlapping moves
 	 * @param firstGte - Existing partial length entry
-	 * @param clientIds - Ids of clients that concurrently obliterated this segment
+	 * @param concurrentMoves - Ids of clients that concurrently obliterated this segment
 	 */
 	static accumulateMoveOverlapForExisting(
 		segmentLen: number,
 		segment: ISegment,
 		firstGte: PartialSequenceLength,
-		clientIds: number[],
+		concurrentMoves: IConcurrentMoveInfo[],
 	): void {
-		const nonInsertingClientIds = clientIds.filter((id) => id !== segment.clientId);
+		const nonInsertingClientIds = concurrentMoves.filter(
+			({ clientId }) => clientId !== segment.clientId,
+		);
 
 		PartialSequenceLengths.accumulateMoveClientOverlap(
 			firstGte,
@@ -532,10 +536,19 @@ export class PartialSequenceLengths {
 		// and if it overlaps with the obliterate of another client, we need to
 		// take into account whether it was obliterated on insert by the other
 		// client
-		if (clientIds.length !== nonInsertingClientIds.length) {
+		if (concurrentMoves.length !== nonInsertingClientIds.length && segment.seq) {
+			// Huh? if clientIds contains segment.clientId, then segment.wasMovedOnInsert cannot be true.
+			// Clients are aware of their own obliterates, so subsequent inserts are never considered concurrent...
 			PartialSequenceLengths.accumulateMoveClientOverlap(
 				firstGte,
-				[segment.clientId],
+				[
+					{
+						clientId: segment.clientId,
+						seq: segment.seq,
+						// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+						expansion: concurrentMoves[0]!.expansion,
+					},
+				],
 				segment.wasMovedOnInsert ? -segment.cachedLength : segmentLen,
 			);
 		}
@@ -551,15 +564,19 @@ export class PartialSequenceLengths {
 	private static getMoveOverlapForExisting(
 		segment: ISegment,
 		obliterateOverlapLen: number,
-		clientIds: number[],
+		clientIds: IConcurrentMoveInfo[],
 	): RedBlackTree<number, IOverlapClient> {
-		const nonInsertingClientIds = clientIds.filter((id) => id !== segment.clientId);
+		const nonInsertingClientIds = clientIds.filter(
+			({ clientId }) => clientId !== segment.clientId,
+		);
 		const overlapObliterateClients = PartialSequenceLengths.getOverlapClients(
-			nonInsertingClientIds,
+			nonInsertingClientIds.map(({ clientId }) => clientId),
 			obliterateOverlapLen,
 		);
 
 		if (clientIds.length !== nonInsertingClientIds.length) {
+			// Huh? if clientIds contains segment.clientId, then segment.wasMovedOnInsert cannot be true.
+			// Clients are aware of their own obliterations, so subsequent insertions are never considered concurrent...
 			overlapObliterateClients.put(segment.clientId, {
 				clientId: segment.clientId,
 				seglen: segment.wasMovedOnInsert ? -segment.cachedLength : obliterateOverlapLen,
@@ -569,16 +586,14 @@ export class PartialSequenceLengths {
 		return overlapObliterateClients;
 	}
 
-	private static updatePartialsAfterInsertion(
+	private static addPartial(
+		partials: PartialSequenceLengthsSet,
 		segment: ISegment,
 		segmentLen: number,
-		remoteObliteratedLen: number | undefined,
-		obliterateOverlapLen: number = segmentLen,
-		partials: PartialSequenceLengthsSet,
 		seq: number,
 		clientId: number,
-		removeClientOverlap: number[] | undefined,
-		moveClientOverlap: number[] | undefined,
+		removeClientOverlap?: number[],
+		moveClientOverlap?: IConcurrentMoveInfo[],
 	): void {
 		const firstGte = partials.firstGte(seq);
 
@@ -588,21 +603,17 @@ export class PartialSequenceLengths {
 			// Existing entry at this seq--this occurs for ops that insert/delete
 			// more than one segment.
 			partialLengthEntry.seglen += segmentLen;
-			if (remoteObliteratedLen) {
-				partialLengthEntry.remoteObliteratedLen ??= 0;
-				partialLengthEntry.remoteObliteratedLen += remoteObliteratedLen;
-			}
 			if (removeClientOverlap) {
 				PartialSequenceLengths.accumulateRemoveClientOverlap(
 					firstGte,
 					removeClientOverlap,
-					obliterateOverlapLen,
+					segmentLen,
 				);
 			}
 
 			if (moveClientOverlap) {
 				PartialSequenceLengths.accumulateMoveOverlapForExisting(
-					obliterateOverlapLen,
+					segmentLen,
 					segment,
 					firstGte,
 					moveClientOverlap,
@@ -612,7 +623,7 @@ export class PartialSequenceLengths {
 			const overlapObliterateClients = moveClientOverlap
 				? PartialSequenceLengths.getMoveOverlapForExisting(
 						segment,
-						obliterateOverlapLen,
+						segmentLen,
 						moveClientOverlap,
 					)
 				: undefined;
@@ -622,9 +633,8 @@ export class PartialSequenceLengths {
 				clientId,
 				len: 0,
 				seglen: segmentLen,
-				remoteObliteratedLen,
 				overlapRemoveClients: removeClientOverlap
-					? PartialSequenceLengths.getOverlapClients(removeClientOverlap, obliterateOverlapLen)
+					? PartialSequenceLengths.getOverlapClients(removeClientOverlap, segmentLen)
 					: undefined,
 				overlapObliterateClients,
 			};
@@ -648,178 +658,99 @@ export class PartialSequenceLengths {
 	 * analogous addition to the bookkeeping for the local segment in
 	 * `combinedPartialLengths.unsequencedRecords`.
 	 */
-	private static insertSegment(
+	private static addSequencePartials(
 		combinedPartialLengths: PartialSequenceLengths,
 		segment: ISegment,
-		removalInfo?: IRemovalInfo,
-		moveInfo?: IMoveInfo,
+		// eslint-disable-next-line import/no-deprecated
+		collabWindow: CollaborationWindow,
 	): void {
-		const removalIsLocal =
-			!!removalInfo && removalInfo.removedSeq === UnassignedSequenceNumber;
-		const moveIsLocal = !!moveInfo && moveInfo.movedSeq === UnassignedSequenceNumber;
-		const isLocal =
-			segment.seq === UnassignedSequenceNumber ||
-			(!!removalInfo && removalIsLocal && (!moveInfo || moveIsLocal)) ||
-			(!!moveInfo && moveIsLocal && (!removalInfo || removalIsLocal));
-		// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-		let seqOrLocalSeq = isLocal ? segment.localSeq! : segment.seq!;
-		let segmentLen = segment.cachedLength;
-		let clientId = segment.clientId;
-		let removeClientOverlap: number[] | undefined;
-		let moveClientOverlap: number[] | undefined;
-		let remoteObliteratedLen: number | undefined;
+		const moveInfo = toMoveInfo(segment);
+		const removalInfo = toRemovalInfo(segment);
 
-		// it's not possible to have an overlapping obliterate and remove that are both local
-		// TT: This is incorrect.
-		// An obliteration containing removed segments should still mark the removed segments as obliterated
-		// so that concurrent insertions only need to look at their immediate neighbors.
-		// assert(
-		// 	(!moveIsLocal && !removalIsLocal) || moveIsLocal !== removalIsLocal,
-		// 	0x870 /* overlapping local obliterate and remove */,
-		// );
-
-		// TODO: ask Abram...
-
-		// const removeHappenedFirst =
-		// 	removalInfo &&
-		// 	(!moveInfo ||
-		// 		moveIsLocal ||
-		// 		(!removalIsLocal && moveInfo.movedSeq > removalInfo.removedSeq));
-		const removeHappenedFirst = isRemoveFirst(removalInfo, moveInfo);
-
-		if (!!removalInfo && removeHappenedFirst) {
-			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-			seqOrLocalSeq = removalIsLocal ? removalInfo.localRemovedSeq! : removalInfo.removedSeq;
-			segmentLen = -segmentLen;
-			// The client who performed the remove is always stored
-			// in the first position of removalInfo.
-			// TODO Non null asserting, why is this not null?
-			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-			clientId = removalInfo.removedClientIds[0]!;
-			const hasOverlap = removalInfo.removedClientIds.length > 1;
-			removeClientOverlap = hasOverlap ? removalInfo.removedClientIds : undefined;
-		} else if (!!moveInfo && !removeHappenedFirst) {
-			// The client who performed the move is always stored
-			// in the first position of moveInfo.
-			// moveInfo is not undefined, so concurrentMoves must have at least one entry
-			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-			clientId = moveInfo.concurrentMoves[0]!.clientId;
-
-			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-			seqOrLocalSeq = moveIsLocal ? moveInfo.localMovedSeq! : moveInfo.movedSeq;
-
-			if (segment.wasMovedOnInsert) {
-				assert(
-					moveInfo.movedSeq !== -1,
-					0x871 /* wasMovedOnInsert should only be set on acked obliterates */,
+		// Insertion partial (always happens first)
+		if (segment.seq && seqLTE(collabWindow.minSeq, segment.seq)) {
+			// Segment was inserted after minSeq
+			const insertionPartials =
+				segment.seq === UnassignedSequenceNumber
+					? combinedPartialLengths.unsequencedRecords?.partialLengths
+					: combinedPartialLengths.partialLengths;
+			const insertionSeqOrLocalSeq =
+				// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+				segment.seq === UnassignedSequenceNumber ? segment.localSeq! : segment.seq;
+			if (insertionPartials !== undefined) {
+				// If insertionPartials is undefined then this is a local partial but its computation isn't required
+				PartialSequenceLengths.addPartial(
+					insertionPartials,
+					segment,
+					segment.cachedLength,
+					insertionSeqOrLocalSeq,
+					segment.clientId,
 				);
-				segmentLen = 0;
-			} else if ((segment.seq ?? 0) > (moveInfo.concurrentMoves[0]?.refSeq ?? 0)) {
-				// Moving client was not aware of this segment because it was inserted concurrently but sequenced before the move.
-				segmentLen = 0;
-				remoteObliteratedLen = segment.cachedLength;
-			} else {
-				segmentLen = -segmentLen;
 			}
-
-			const hasOverlap = moveInfo.concurrentMoves.length > 1;
-			moveClientOverlap = hasOverlap
-				? moveInfo.concurrentMoves.map(({ clientId: moveClientId }) => moveClientId)
-				: undefined;
-		} else if (segment.wasMovedOnInsert) {
-			// if this segment was obliterated on insert, its length is only
-			// visible to the client that inserted it
-			segmentLen = 0;
-			remoteObliteratedLen = segment.cachedLength;
 		}
 
-		const partials = isLocal
-			? combinedPartialLengths.unsequencedRecords?.partialLengths
-			: combinedPartialLengths.partialLengths;
-		if (partials === undefined) {
-			// Local partial but its computation isn't required
-			return;
+		// First of removal/obliteration
+		if (isRemoveFirst(removalInfo, moveInfo)) {
+			assert(removalInfo !== undefined, "Removal info must be defined if it happened first");
+			// Segment was removed after minSeq but before any move/obliterate
+			const removalPartials =
+				removalInfo.removedSeq === UnassignedSequenceNumber
+					? combinedPartialLengths.unsequencedRecords?.partialLengths
+					: combinedPartialLengths.partialLengths;
+			if (removalPartials !== undefined) {
+				// If removalPartials is undefined then this is a local partial but its computation isn't required
+				PartialSequenceLengths.addPartial(
+					removalPartials,
+					segment,
+					-segment.cachedLength,
+					removalInfo.removedSeq,
+					segment.clientId,
+					removalInfo.removedClientIds,
+					moveInfo?.concurrentMoves,
+				);
+			}
+		} else if (moveInfo && seqLTE(collabWindow.minSeq, moveInfo.movedSeq)) {
+			// Segment was moved after minSeq, but before any removal
+			const movePartials =
+				moveInfo.movedSeq === UnassignedSequenceNumber
+					? combinedPartialLengths.unsequencedRecords?.partialLengths
+					: combinedPartialLengths.partialLengths;
+			if (movePartials !== undefined) {
+				// If movePartials is undefined then this is a local partial but its computation isn't required
+				PartialSequenceLengths.addPartial(
+					movePartials,
+					segment,
+					-segment.cachedLength,
+					moveInfo.movedSeq,
+					// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+					moveInfo.concurrentMoves[0]!.clientId,
+					removalInfo?.removedClientIds,
+					moveInfo.concurrentMoves,
+				);
+			}
 		}
 
-		// overlapping move and remove, remove happened first
-		if (
-			moveInfo &&
-			removalInfo &&
-			removeHappenedFirst &&
-			!moveIsLocal &&
-			// movedSeq is undefined when the obliterator was already aware of the removal,
-			// or was unaware of the segment's insertion and the segment was removed before the obliteration,
-			// in which case the segment is already length 0
-			moveInfo.movedSeq !== undefined
-		) {
-			// The client who performed the remove is always stored
-			// in the first position of removalInfo.
-			// TODO Non null asserting, why is this not null?
-			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-			const moveClientId = moveInfo.concurrentMoves[0]!.clientId;
-			const hasOverlap = moveInfo.concurrentMoves.length > 1;
-
-			PartialSequenceLengths.updatePartialsAfterInsertion(
-				segment,
-				0,
-				-segment.cachedLength,
-				segmentLen,
-				partials,
-				moveInfo.movedSeq,
-				moveClientId,
-				undefined,
-				hasOverlap ? moveInfo.concurrentMoves.map(({ clientId: id }) => id) : undefined,
-			);
-		}
-
-		if (removalInfo && !removeHappenedFirst && !removalIsLocal) {
-			const removeSeqOrLocalSeq = removalIsLocal
-				? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-					removalInfo.localRemovedSeq!
-				: removalInfo.removedSeq;
-			// The client who performed the remove is always stored
-			// in the first position of removalInfo.
-			// TODO Non null asserting, why is this not null?
-			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-			const removeClientId = removalInfo.removedClientIds[0]!;
-			const hasOverlap = removalInfo.removedClientIds.length > 1;
-
-			PartialSequenceLengths.updatePartialsAfterInsertion(
-				segment,
-				0,
-				-segment.cachedLength,
-				segmentLen,
-				partials,
-				removeSeqOrLocalSeq,
-				removeClientId,
-				hasOverlap ? removalInfo.removedClientIds : undefined,
-				undefined,
-			);
-		}
-
-		PartialSequenceLengths.updatePartialsAfterInsertion(
-			segment,
-			segmentLen,
-			remoteObliteratedLen,
-			undefined,
-			partials,
-			seqOrLocalSeq,
-			clientId,
-			removeClientOverlap,
-			moveClientOverlap,
-		);
+		// TODO: add client-specific partials for subsequent removals/moves
 
 		// todo: the below block needs to be changed to handle obliterate, which
 		// doesn't have great support for reconnect at the moment. see ADO #3714
 		const { unsequencedRecords } = combinedPartialLengths;
-		if (unsequencedRecords && removeClientOverlap && segment.localRemovedSeq !== undefined) {
+		if (
+			unsequencedRecords &&
+			(segment.removedClientIds?.length ?? 0) > 1 &&
+			segment.localRemovedSeq !== undefined &&
+			segment.seq !== undefined
+		) {
+			const seqOrLocalSeq =
+				// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+				segment.seq === UnassignedSequenceNumber ? segment.localSeq! : segment.seq;
 			const localSeq = segment.localRemovedSeq;
 			const localPartialLengthEntry: LocalPartialSequenceLength = {
 				seq: seqOrLocalSeq,
 				localSeq,
-				clientId,
+				clientId: segment.clientId,
 				len: 0,
-				seglen: segmentLen,
+				seglen: -segment.cachedLength,
 			};
 			let localIndexFirstGTE = 0;
 			for (

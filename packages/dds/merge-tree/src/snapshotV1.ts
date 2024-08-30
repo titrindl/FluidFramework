@@ -330,9 +330,8 @@ export class SnapshotV1 {
 					);
 					raw.movedSeq = segment.movedSeq;
 					raw.concurrentMoves = segment.concurrentMoves?.map(
-						({ seq, refSeq, clientId: id, expansion }) => ({
+						({ seq, clientId: id, expansion }) => ({
 							seq,
-							refSeq,
 							clientId: this.getLongClientId(id),
 							expansion,
 						}),

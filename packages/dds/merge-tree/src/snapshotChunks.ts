@@ -74,7 +74,6 @@ export interface IJSONSegmentWithMergeInfo {
 	movedSeq?: number;
 	concurrentMoves?: {
 		seq: number;
-		refSeq: number;
 		clientId: string;
 		expansion: RangeExpansion;
 	}[];

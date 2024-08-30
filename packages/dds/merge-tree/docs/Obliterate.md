@@ -525,11 +525,11 @@ The segment state of some observing client after seq 3 is essentially the same a
 
 From the observing client perspective, the interpretation of each client's text if they were to submit an op with refSeq 0 through 3 is as follows:
 
-| refSeq | client 1 | client 2 | client 3 |
-| 0 | 56789 | 56789 | 01hi23456789 |
-| 1 | 56789 | 56789 | 56789 |
-| 1 | 56789 | 56789 | 56789 |
-| 1 | 56789 | 56789 | 56789 |
+| refSeq | client 1 | client 2 | client 3     |
+| 0      | 56789    | 56789    | 01hi23456789 |
+| 1      | 56789    | 56789    | 56789        |
+| 1      | 56789    | 56789    | 56789        |
+| 1      | 56789    | 56789    | 56789        |
 
 The corresponding lengths table is exactly what's achieved by combining the overlapping remove strategy with the strategy for bookkeeping concurrently inserted segments:
 
