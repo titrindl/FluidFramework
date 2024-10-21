@@ -76,6 +76,7 @@ fluid-framework
 @fluid-experimental/sequence-deprecated
 @fluid-experimental/sharejs-json1
 @fluid-experimental/ot
+@fluid-experimental/directory-tree
 @fluid-experimental/attributable-map
 @fluid-experimental/property-properties
 @fluid-experimental/property-dds

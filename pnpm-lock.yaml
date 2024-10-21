@@ -6476,6 +6476,145 @@ importers:
         specifier: ~5.4.5
         version: 5.4.5
 
+  experimental/dds/directory-tree:
+    dependencies:
+      '@fluid-internal/client-utils':
+        specifier: workspace:~
+        version: link:../../../packages/common/client-utils
+      '@fluidframework/container-definitions':
+        specifier: workspace:~
+        version: link:../../../packages/common/container-definitions
+      '@fluidframework/core-interfaces':
+        specifier: workspace:~
+        version: link:../../../packages/common/core-interfaces
+      '@fluidframework/core-utils':
+        specifier: workspace:~
+        version: link:../../../packages/common/core-utils
+      '@fluidframework/datastore-definitions':
+        specifier: workspace:~
+        version: link:../../../packages/runtime/datastore-definitions
+      '@fluidframework/driver-definitions':
+        specifier: workspace:~
+        version: link:../../../packages/common/driver-definitions
+      '@fluidframework/id-compressor':
+        specifier: workspace:~
+        version: link:../../../packages/runtime/id-compressor
+      '@fluidframework/map':
+        specifier: workspace:~
+        version: link:../../../packages/dds/map
+      '@fluidframework/runtime-definitions':
+        specifier: workspace:~
+        version: link:../../../packages/runtime/runtime-definitions
+      '@fluidframework/runtime-utils':
+        specifier: workspace:~
+        version: link:../../../packages/runtime/runtime-utils
+      '@fluidframework/shared-object-base':
+        specifier: workspace:~
+        version: link:../../../packages/dds/shared-object-base
+      '@fluidframework/telemetry-utils':
+        specifier: workspace:~
+        version: link:../../../packages/utils/telemetry-utils
+      '@fluidframework/tree':
+        specifier: workspace:~
+        version: link:../../../packages/dds/tree
+      path-browserify:
+        specifier: ^1.0.1
+        version: 1.0.1
+    devDependencies:
+      '@arethetypeswrong/cli':
+        specifier: ^0.16.4
+        version: 0.16.4
+      '@biomejs/biome':
+        specifier: ~1.9.3
+        version: 1.9.3
+      '@fluid-internal/mocha-test-setup':
+        specifier: workspace:~
+        version: link:../../../packages/test/mocha-test-setup
+      '@fluid-private/stochastic-test-utils':
+        specifier: workspace:~
+        version: link:../../../packages/test/stochastic-test-utils
+      '@fluid-private/test-drivers':
+        specifier: workspace:~
+        version: link:../../../packages/test/test-drivers
+      '@fluid-tools/benchmark':
+        specifier: ^0.50.0
+        version: 0.50.0
+      '@fluidframework/build-common':
+        specifier: ^2.0.3
+        version: 2.0.3
+      '@fluidframework/build-tools':
+        specifier: ^0.49.0
+        version: 0.49.0
+      '@fluidframework/container-loader':
+        specifier: workspace:~
+        version: link:../../../packages/loader/container-loader
+      '@fluidframework/container-runtime':
+        specifier: workspace:~
+        version: link:../../../packages/runtime/container-runtime
+      '@fluidframework/eslint-config-fluid':
+        specifier: ^5.4.0
+        version: 5.4.0(eslint@8.55.0)(typescript@5.4.5)
+      '@fluidframework/test-runtime-utils':
+        specifier: workspace:~
+        version: link:../../../packages/runtime/test-runtime-utils
+      '@fluidframework/test-utils':
+        specifier: workspace:~
+        version: link:../../../packages/test/test-utils
+      '@fluidframework/undo-redo':
+        specifier: workspace:~
+        version: link:../../../packages/framework/undo-redo
+      '@microsoft/api-extractor':
+        specifier: 7.47.8
+        version: 7.47.8(patch_hash=ldzfpsbo3oeejrejk775zxplmi)(@types/node@18.19.54)
+      '@types/chai':
+        specifier: ^4.0.0
+        version: 4.3.20
+      '@types/mocha':
+        specifier: ^9.1.1
+        version: 9.1.1
+      c8:
+        specifier: ^8.0.1
+        version: 8.0.1
+      chai:
+        specifier: ^4.2.0
+        version: 4.5.0
+      concurrently:
+        specifier: ^8.2.1
+        version: 8.2.2
+      copyfiles:
+        specifier: ^2.4.1
+        version: 2.4.1
+      cross-env:
+        specifier: ^7.0.3
+        version: 7.0.3
+      env-cmd:
+        specifier: ^10.1.0
+        version: 10.1.0
+      eslint:
+        specifier: ~8.55.0
+        version: 8.55.0
+      eslint-config-prettier:
+        specifier: ~9.0.0
+        version: 9.0.0(eslint@8.55.0)
+      mocha:
+        specifier: ^10.2.0
+        version: 10.7.3
+      mocha-multi-reporters:
+        specifier: ^1.5.1
+        version: 1.5.1(mocha@10.7.3)
+      moment:
+        specifier: ^2.21.0
+        version: 2.30.1
+      prettier:
+        specifier: ~3.0.3
+        version: 3.0.3
+      rimraf:
+        specifier: ^4.4.0
+        version: 4.4.1
+      typescript:
+        specifier: ~5.4.5
+        version: 5.4.5
+
   experimental/dds/ot/ot:
     dependencies:
       '@fluid-internal/client-utils':
@@ -28440,6 +28579,7 @@ packages:
   /eslint@6.8.0:
     resolution: {integrity: sha512-K+Iayyo2LtyYhDSYwz5D5QdWw0hCacNzyq1Y821Xna2xSJj7cijoLLYmLxTQgcgZ9mC61nryMy9S7GRbYpI5Ig==}
     engines: {node: ^8.10.0 || ^10.13.0 || >=11.10.1}
+    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.
     hasBin: true
     dependencies:
       '@babel/code-frame': 7.25.7
