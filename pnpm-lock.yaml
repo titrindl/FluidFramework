@@ -6517,6 +6517,9 @@ importers:
       '@fluidframework/tree':
         specifier: workspace:~
         version: link:../../../packages/dds/tree
+      fluid-framework:
+        specifier: workspace:~
+        version: link:../../../packages/framework/fluid-framework
       path-browserify:
         specifier: ^1.0.1
         version: 1.0.1

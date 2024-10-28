@@ -100,6 +100,7 @@ class SharedDirectoryTreeInternal
 	extends SharedObject<ISharedDirectoryEvents>
 	implements ISharedDirectory
 {
+	private tree: SharedTree;
 	constructor(
 		public id: string,
 		public readonly runtime: IFluidDataStoreRuntime,

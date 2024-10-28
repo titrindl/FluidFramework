@@ -75,6 +75,7 @@
 		"@fluidframework/telemetry-utils": "workspace:~",
 		"@fluidframework/tree": "workspace:~",
 		"@fluidframework/map": "workspace:~",
+		"fluid-framework": "workspace:~",
 		"path-browserify": "^1.0.1"
 	},
 	"devDependencies": {
